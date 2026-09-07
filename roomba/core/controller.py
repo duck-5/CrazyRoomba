@@ -281,17 +281,29 @@ class RobotController:
         self.log_event("info", f"Switched mode to {self.client.mode}")
         return {"status": "ok", "mode": self.client.mode, "armed": self.armed}
 
+    async def set_operating_mode(self, mode_name: str) -> Dict[str, Any]:
+        """Switch active autonomous operating mode (e.g. manual, wander, follow_person)."""
+        await self.mode_manager.set_active(mode_name)
+        return {
+            "status": "ok",
+            "active_mode": self.mode_manager.active_name,
+            "active_behavior": self.mode_manager.active_name,
+        }
+
     async def set_behavior(self, behavior_name: str) -> Dict[str, Any]:
-        """Switch active autonomous behavior (e.g. manual, wander, follow_person)."""
-        await self.behavior_manager.set_active(behavior_name)
-        return {"status": "ok", "active_behavior": self.behavior_manager.active_name}
+        """Backward-compatible alias for set_operating_mode."""
+        return await self.set_operating_mode(behavior_name)
+
+    def list_modes(self) -> List[Dict[str, Any]]:
+        """List all available operating mode scripts."""
+        return self.mode_manager.list_modes()
 
     def list_behaviors(self) -> List[Dict[str, Any]]:
-        """List all available behavior scripts."""
-        return self.behavior_manager.list_behaviors()
+        """Backward-compatible alias for list_modes."""
+        return self.list_modes()
 
     def set_perception_target(self, target_data: Dict[str, Any]) -> None:
-        """Inject target perception data (e.g. vision bounding box) for behaviors."""
+        """Inject target perception data (e.g. vision bounding box) for autonomous modes."""
         self.latest_perception = target_data
 
     # --- Movement Commands ---
@@ -518,6 +530,7 @@ class RobotController:
         t["is_driving"] = self.is_driving
         t["is_mock"] = self.is_mock
         t["port"] = self.port
+        t["active_mode"] = self.mode_manager.active_name
         t["active_behavior"] = self.behavior_manager.active_name
         t["timestamp"] = time.time()
 

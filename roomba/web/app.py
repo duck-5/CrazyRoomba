@@ -40,6 +40,10 @@ class BehaviorRequest(BaseModel):
     behavior: str = Field(..., description="Target behavior name (e.g. manual, wander, follow_person)")
 
 
+class ModeScriptRequest(BaseModel):
+    mode: str = Field(..., description="Target operating mode script (e.g. manual, wander, follow_person)")
+
+
 class PerceptionRequest(BaseModel):
     target: Dict[str, Any] = Field(..., description="Target perception payload, e.g. target_person")
 
@@ -143,11 +147,32 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-    # --- Behaviors Endpoints ---
+    # --- Autonomous Operating Modes & Behaviors ---
+    @application.get("/api/modes")
+    async def api_list_modes():
+        """List registered autonomous operating modes and active status."""
+        return {
+            "active": controller.mode_manager.active_name,
+            "modes": controller.list_modes(),
+        }
+
+    @application.post("/api/modes/start")
+    async def api_start_mode(req: ModeScriptRequest):
+        """Switch to an autonomous operating mode script."""
+        try:
+            return await controller.set_operating_mode(req.mode)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @application.post("/api/modes/stop")
+    async def api_stop_mode():
+        """Revert to manual operating mode."""
+        await controller.mode_manager.stop_active()
+        return {"status": "ok", "active_mode": "manual", "active_behavior": "manual"}
 
     @application.get("/api/behaviors")
     async def api_list_behaviors():
-        """List registered autonomous behaviors and active status."""
+        """Backward-compatible alias for /api/modes."""
         return {
             "active": controller.behavior_manager.active_name,
             "behaviors": controller.list_behaviors(),
@@ -155,7 +180,7 @@ def create_app() -> FastAPI:
 
     @application.post("/api/behaviors/start")
     async def api_start_behavior(req: BehaviorRequest):
-        """Switch to an autonomous behavior script."""
+        """Backward-compatible alias for /api/modes/start."""
         try:
             return await controller.set_behavior(req.behavior)
         except Exception as e:
@@ -163,9 +188,8 @@ def create_app() -> FastAPI:
 
     @application.post("/api/behaviors/stop")
     async def api_stop_behavior():
-        """Revert to manual teleop behavior."""
-        await controller.behavior_manager.stop_active()
-        return {"status": "ok", "active_behavior": "manual"}
+        """Backward-compatible alias for /api/modes/stop."""
+        return await api_stop_mode()
 
     @application.post("/api/perception")
     async def api_inject_perception(req: PerceptionRequest):
