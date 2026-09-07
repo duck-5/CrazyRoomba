@@ -12,10 +12,9 @@ LABEL description="Roomba 960 Autonomous Controller & Real-Time Web Cockpit"
 # Python runtime configuration
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_DEFAULT_TIMEOUT=120 \
-    PIP_RETRIES=10 \
+    PIP_DEFAULT_TIMEOUT=1000 \
+    PIP_RETRIES=20 \
     DEBIAN_FRONTEND=noninteractive \
     ROOMBA_HOST=0.0.0.0 \
     ROOMBA_HTTP_PORT=8000 \
@@ -49,7 +48,9 @@ WORKDIR /app
 
 # 4. Install Python dependencies
 COPY requirements.txt pyproject.toml README.md ./
-RUN pip install --no-cache-dir --default-timeout=120 --retries=10 -r requirements.txt
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install --default-timeout=1000 --retries=20 --prefer-binary -r requirements.txt && \
+    rm -rf /root/.cache/pip
 
 # 5. Copy project source code
 COPY roomba/ ./roomba/
