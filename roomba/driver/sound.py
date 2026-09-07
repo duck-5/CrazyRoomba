@@ -5,8 +5,26 @@ Converts musical melodies into Roomba Open Interface song packets (Opcode 140/14
 
 from __future__ import annotations
 
+import io
+import logging
+import os
 import re
-from typing import List, Tuple, Dict, Any, Optional
+import tempfile
+from typing import List, Tuple, Dict, Any, Optional, Union
+
+import numpy as np
+import scipy.signal as signal
+from scipy.io import wavfile
+
+logger = logging.getLogger(__name__)
+
+# Optional Windows SAPI support
+try:
+    import pythoncom
+    import win32com.client
+    _HAS_SAPI = True
+except ImportError:
+    _HAS_SAPI = False
 
 # MIDI base note mapping
 NOTE_TO_SEMITONE = {
@@ -33,21 +51,10 @@ MORSE_MAP = {
 
 # Human Vocal Gestures & Formant Synthesis Library
 HUMAN_SOUNDS: Dict[str, List[Tuple[int, int]]] = {
+    # Spoken Words
     # "Hello!": Two-syllable greeting inflection (rising diphthong)
     "hello": [
         (65, 5), (67, 5), (0, 2), (72, 8), (76, 12)
-    ],
-    # "Uh-oh!": Classic two-note human warning / mistake vocalization (descending minor third)
-    "uh_oh": [
-        (72, 8), (0, 4), (67, 14)
-    ],
-    # "Laugh / Ha-Ha-Ha": Human laughter burst with natural pitch and volume cadence
-    "laugh": [
-        (74, 5), (0, 3), (74, 5), (0, 3), (72, 5), (0, 3), (71, 6), (0, 3), (69, 10)
-    ],
-    # "Wow!": Gliding human vocal expression of wonder (inflected scoop)
-    "wow": [
-        (60, 4), (64, 4), (69, 6), (74, 8), (72, 10), (67, 8)
     ],
     # "Yes! / Affirmative": Cheerful rising double-chirp
     "yes": [
@@ -57,9 +64,59 @@ HUMAN_SOUNDS: Dict[str, List[Tuple[int, int]]] = {
     "no": [
         (72, 7), (0, 3), (67, 9)
     ],
+    # "Roomba": Formant synthesis of "Room-ba" name
+    "roomba": [
+        (62, 6), (60, 8), (0, 2), (55, 4), (69, 10), (72, 12)
+    ],
+    # "Help": Urgent rising inflection
+    "help": [
+        (74, 4), (76, 8), (80, 6), (88, 3)
+    ],
+    # "Danger": Two-tone urgent warning
+    "danger": [
+        (76, 6), (74, 4), (67, 6), (0, 2), (71, 8), (69, 10)
+    ],
+    # "Stop": Crisp assertive halt command
+    "stop": [
+        (96, 2), (90, 2), (64, 8), (67, 8), (88, 3)
+    ],
+    # "Thank You": Warm two-syllable cadence
+    "thank_you": [
+        (90, 3), (69, 6), (72, 6), (0, 2), (77, 8), (60, 10)
+    ],
+    # "Goodbye": Melodic descending two-syllable sign-off
+    "goodbye": [
+        (72, 8), (0, 2), (67, 12), (0, 4), (64, 16)
+    ],
+
+    # Emotional Vocal Gestures
+    # "Uh-oh!": Classic two-note human warning / mistake vocalization (descending minor third)
+    "uh_oh": [
+        (72, 8), (0, 4), (67, 14)
+    ],
+    # "Laugh / Ha-Ha-Ha": Human laughter burst with natural pitch and volume cadence
+    "laugh": [
+        (74, 5), (0, 3), (74, 5), (0, 3), (72, 5), (0, 3), (71, 6), (0, 3), (69, 10)
+    ],
+    # "Scream": Piercing high-frequency human vocal alarm
+    "scream": [
+        (65, 3), (72, 4), (77, 4), (84, 5), (89, 6), (93, 8), (96, 12), (93, 8), (89, 6)
+    ],
+    # "Wow!": Gliding human vocal expression of wonder (inflected scoop)
+    "wow": [
+        (60, 4), (64, 4), (69, 6), (74, 8), (72, 10), (67, 8)
+    ],
     # "Sigh": Soft descending human exhale
     "sigh": [
         (76, 6), (74, 6), (72, 8), (69, 10), (65, 12), (60, 16)
+    ],
+    # "Cough": Dry human throat-clearing plosive cough burst
+    "cough": [
+        (80, 2), (62, 4), (0, 4), (82, 2), (60, 6)
+    ],
+    # "Gasp": Sudden sharp intake of breath
+    "gasp": [
+        (60, 4), (67, 5), (76, 6), (84, 8)
     ],
     # "Yawn": Long rising vocal stretch into relaxed release
     "yawn": [
@@ -77,13 +134,13 @@ HUMAN_SOUNDS: Dict[str, List[Tuple[int, int]]] = {
     "giggle": [
         (79, 4), (0, 2), (81, 4), (0, 2), (79, 4), (0, 2), (83, 6), (0, 2), (81, 8)
     ],
+    # "Groan": Low strained human vocalization
+    "groan": [
+        (50, 12), (48, 14), (46, 16), (45, 20)
+    ],
     # "Hmm / Pondering": Thoughtful rising-falling vocalization
     "hmm": [
         (60, 12), (62, 14), (60, 16)
-    ],
-    # "Goodbye": Melodic descending two-syllable sign-off
-    "goodbye": [
-        (72, 8), (0, 2), (67, 12), (0, 4), (64, 16)
     ],
 }
 
@@ -293,3 +350,235 @@ def text_to_vocal_tones(text: str) -> List[Tuple[int, int]]:
             notes.append((0, 4))  # Inter-word vocal pause
 
     return notes
+
+
+def grind_audio_to_roomba_notes(
+    audio_data: np.ndarray,
+    sample_rate: int,
+    mode: str = "formant_interleave",
+    silence_thresh_ratio: float = 0.03,
+) -> List[Tuple[int, int]]:
+    """
+    Grind arbitrary audio signals (human speech, laughter, vocalizations, cries)
+    down into Roomba Open Interface Opcode 140 (Song) notes: (midi_pitch, duration_in_64ths).
+
+    Features:
+    - 64 Hz time-slicing matching Roomba's native 1/64s timer resolution (~15.625 ms).
+    - Voice Activity Detection (VAD) via RMS energy.
+    - Zero-Crossing Rate (ZCR) detection for unvoiced consonant / fricative noise transients.
+    - Time-Division Formant Multiplexing (alternating F1 & F2 at 64 Hz) for composite vowel perception.
+    - Run-length duration compression (up to 250/64s) for smooth transitions and compact packets.
+    """
+    if audio_data is None or len(audio_data) == 0:
+        return []
+
+    # Downmix multi-channel to mono
+    if audio_data.ndim > 1:
+        audio_data = audio_data.mean(axis=1)
+
+    audio = audio_data.astype(np.float32)
+    max_val = np.max(np.abs(audio)) if len(audio) > 0 else 1.0
+    if max_val > 0:
+        audio = audio / max_val  # Normalize to [-1.0, 1.0]
+
+    # 1/64th second window (~15.625 ms) matching Roomba duration resolution
+    frame_len = max(16, int(round(sample_rate / 64.0)))
+    hop_len = frame_len
+
+    raw_notes: List[int] = []
+    fft_size = max(512, int(2 ** np.ceil(np.log2(frame_len * 2))))
+
+    for i in range(0, len(audio) - frame_len + 1, hop_len):
+        frame = audio[i : i + frame_len]
+        rms = float(np.sqrt(np.mean(frame**2)))
+
+        # 1. Silence check
+        if rms < silence_thresh_ratio:
+            raw_notes.append(0)
+            continue
+
+        # 2. Zero-crossing rate for unvoiced plosives/fricatives ('s', 'sh', 'f', 't', 'k')
+        zcr = float(np.mean(np.abs(np.diff(np.sign(frame))))) / 2.0
+        if zcr > 0.22:
+            # Unvoiced turbulent noise burst (MIDI 95 to 112)
+            f_noise = 2500.0 + (zcr * 2000.0)
+            midi_noise = int(round(69 + 12 * np.log2(f_noise / 440.0)))
+            raw_notes.append(max(31, min(115, midi_noise)))
+            continue
+
+        # 3. Spectral analysis for voiced vocal resonances (formants)
+        w_frame = frame * np.hanning(len(frame))
+        spec = np.abs(np.fft.rfft(w_frame, n=fft_size))
+        freqs = np.fft.rfftfreq(fft_size, d=1.0 / sample_rate)
+
+        # Human vocal formant band: 200 Hz to 3500 Hz
+        mask = (freqs >= 200) & (freqs <= 3500)
+        v_spec = spec[mask]
+        v_freqs = freqs[mask]
+
+        if len(v_spec) == 0 or np.max(v_spec) == 0:
+            raw_notes.append(0)
+            continue
+
+        if mode == "formant_interleave":
+            # Find resonance peaks (Formants F1 & F2)
+            peaks, _ = signal.find_peaks(v_spec, height=float(np.max(v_spec)) * 0.22, distance=3)
+            if len(peaks) >= 2:
+                # Sort peaks by spectral energy descending
+                sorted_p = peaks[np.argsort(v_spec[peaks])][::-1]
+                f1 = float(v_freqs[sorted_p[0]])
+                f2 = float(v_freqs[sorted_p[1]])
+                m1 = max(31, min(127, int(round(69 + 12 * np.log2(f1 / 440.0)))))
+                m2 = max(31, min(127, int(round(69 + 12 * np.log2(f2 / 440.0)))))
+                # Alternate between F1 and F2 on consecutive 1/64s frames (auditory fusion)
+                selected_note = m1 if (len(raw_notes) % 2 == 0) else m2
+                raw_notes.append(selected_note)
+            else:
+                best_idx = int(np.argmax(v_spec))
+                f = float(v_freqs[best_idx])
+                m = max(31, min(127, int(round(69 + 12 * np.log2(f / 440.0)))))
+                raw_notes.append(m)
+
+        elif mode == "pitch_f0":
+            # Fundamental frequency tracking (80 Hz - 400 Hz)
+            f0_mask = (freqs >= 80) & (freqs <= 450)
+            f0_spec = spec[f0_mask]
+            f0_freqs = freqs[f0_mask]
+            if len(f0_spec) > 0 and np.max(f0_spec) > 0:
+                best_f0 = float(f0_freqs[np.argmax(f0_spec)])
+                m = max(31, min(127, int(round(69 + 12 * np.log2(best_f0 / 440.0)))))
+                raw_notes.append(m)
+            else:
+                raw_notes.append(0)
+
+        else:  # "dominant_peak"
+            best_idx = int(np.argmax(v_spec))
+            f = float(v_freqs[best_idx])
+            m = max(31, min(127, int(round(69 + 12 * np.log2(f / 440.0)))))
+            raw_notes.append(m)
+
+    # 4. Compress consecutive identical notes into longer durations
+    compressed: List[Tuple[int, int]] = []
+    curr_note: Optional[int] = None
+    curr_dur = 0
+
+    for n in raw_notes:
+        if n == curr_note and curr_dur < 250:
+            curr_dur += 1
+        else:
+            if curr_note is not None:
+                compressed.append((curr_note, curr_dur))
+            curr_note = n
+            curr_dur = 1
+
+    if curr_note is not None:
+        compressed.append((curr_note, curr_dur))
+
+    return compressed
+
+
+def grind_wav_bytes_to_notes(
+    wav_bytes: bytes,
+    mode: str = "formant_interleave",
+    silence_thresh_ratio: float = 0.03,
+) -> List[Tuple[int, int]]:
+    """
+    Parse standard WAV audio bytes and grind down into Roomba Open Interface notes.
+    """
+    buf = io.BytesIO(wav_bytes)
+    sr, data = wavfile.read(buf)
+    return grind_audio_to_roomba_notes(
+        data,
+        sample_rate=sr,
+        mode=mode,
+        silence_thresh_ratio=silence_thresh_ratio,
+    )
+
+
+def generate_phonetic_waveform(text: str, sample_rate: int = 16000) -> np.ndarray:
+    """
+    Pure Python acoustic vocal tract acoustic synthesizer (fallback when SAPI is unavailable).
+    Models glottal pulse train excitation and F1/F2 vocal tract filter resonances.
+    """
+    VOWEL_PARAMS: Dict[str, Tuple[float, float, float]] = {
+        "a": (130.0, 750.0, 1200.0),
+        "e": (140.0, 500.0, 1800.0),
+        "i": (150.0, 280.0, 2300.0),
+        "o": (120.0, 500.0, 900.0),
+        "u": (110.0, 320.0, 800.0),
+    }
+
+    t_frames: List[np.ndarray] = []
+    dt = 1.0 / float(sample_rate)
+
+    clean_words = text.lower().replace("?", "").replace("!", "").replace(".", "").replace(",", "").split()
+    for word in clean_words:
+        for ch in word:
+            f0, f1, f2 = VOWEL_PARAMS.get(ch, (130.0, 600.0, 1400.0))
+            dur = 0.12 if ch in VOWEL_PARAMS else 0.05
+            n_samples = max(16, int(dur * sample_rate))
+            t = np.arange(n_samples, dtype=np.float32) * dt
+
+            # Glottal pulse source + vocal tract formant filter
+            glottal = signal.sawtooth(2.0 * np.pi * f0 * t, width=0.1)
+            formants = 0.6 * np.sin(2.0 * np.pi * f1 * t) + 0.4 * np.sin(2.0 * np.pi * f2 * t)
+
+            if ch not in VOWEL_PARAMS and ch in "ptkcsxf":
+                # Unvoiced consonant transient
+                noise = np.random.uniform(-1.0, 1.0, n_samples).astype(np.float32)
+                frame = 0.7 * noise + 0.3 * formants
+            else:
+                frame = glottal * 0.4 + formants * 0.6
+
+            frame *= np.hanning(n_samples)
+            t_frames.append(frame)
+
+        # Word gap
+        t_frames.append(np.zeros(int(0.08 * sample_rate), dtype=np.float32))
+
+    if not t_frames:
+        return np.zeros(int(sample_rate * 0.2), dtype=np.float32)
+
+    return np.concatenate(t_frames).astype(np.float32)
+
+
+def synthesize_and_grind_speech(
+    text: str,
+    rate: int = 0,
+    mode: str = "formant_interleave",
+) -> List[Tuple[int, int]]:
+    """
+    Synthesize human speech audio from text using Windows SAPI (or phonetic fallback)
+    and grind the resulting acoustic waveform into Roomba Open Interface notes.
+    """
+    if not text.strip():
+        return []
+
+    # 1. Try Windows SAPI Speech Synthesis to WAV
+    if _HAS_SAPI:
+        try:
+            pythoncom.CoInitialize()
+            voice = win32com.client.Dispatch("SAPI.SpVoice")
+            stream = win32com.client.Dispatch("SAPI.SpFileStream")
+            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            tmp_path = tmp.name
+            tmp.close()
+            try:
+                stream.Open(tmp_path, 3)  # SSFMCreateForWrite
+                voice.AudioOutputStream = stream
+                voice.Rate = max(-10, min(10, int(rate)))
+                voice.Speak(text)
+                stream.Close()
+                with open(tmp_path, "rb") as f:
+                    wav_data = f.read()
+                return grind_wav_bytes_to_notes(wav_data, mode=mode)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+        except Exception as e:
+            logger.warning(f"SAPI voice synthesis warning: {e}. Falling back to acoustic model.")
+
+    # 2. Pure Python Fallback Acoustic Model
+    audio = generate_phonetic_waveform(text, sample_rate=16000)
+    return grind_audio_to_roomba_notes(audio, sample_rate=16000, mode=mode)
+

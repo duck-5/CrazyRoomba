@@ -130,12 +130,17 @@ class MockRoombaClient:
 
     async def play_tune(self, notes: Sequence[Tuple[int, int]], song_slot: int = 0) -> None:
         chunk_size = 16
-        for i in range(0, len(notes), chunk_size):
-            chunk = list(notes[i:i + chunk_size])
-            await self.define_song(song_slot, chunk)
-            await self.play_song(song_slot)
+        chunks = [list(notes[i:i + chunk_size]) for i in range(0, len(notes), chunk_size)]
+        if not chunks:
+            return
+        slot = song_slot
+        for chunk in chunks:
+            await self.define_song(slot, chunk)
+            await self.play_song(slot)
             total_dur = sum(dur for _, dur in chunk) / 64.0
-            await asyncio.sleep(min(0.05, total_dur))
+            await asyncio.sleep(min(0.01, total_dur))
+            slot = 1 if slot == 0 else 0
+
 
     async def beep(self, note: int = 72, duration: int = 16) -> None:
         logger.info(f"Mock: Beep! Note={note}, Duration={duration}")

@@ -133,11 +133,22 @@ class RoombaCockpit {
     this.valBeepDur = document.getElementById("val-beep-dur");
     this.btnPlayTone = document.getElementById("btn-play-tone");
     this.btnQuickSos = document.getElementById("btn-quick-sos");
-    this.selectHumanSound = document.getElementById("select-human-sound");
-    this.btnPlayHumanSound = document.getElementById("btn-play-human-sound");
     this.inputSpeechText = document.getElementById("input-speech-text");
+    this.selectSpeechMode = document.getElementById("select-speech-mode");
     this.selectSpeechTarget = document.getElementById("select-speech-target");
     this.btnSpeakVoice = document.getElementById("btn-speak-voice");
+    this.btnRecordMic = document.getElementById("btn-record-mic");
+    this.micIcon = document.getElementById("mic-icon");
+    this.micLabel = document.getElementById("mic-label");
+    this.micStatusBadge = document.getElementById("mic-status-badge");
+    this.inputAudioFile = document.getElementById("input-audio-file");
+    this.btnGrindFile = document.getElementById("btn-grind-file");
+    this.soundboardContainer = document.getElementById("soundboard-container");
+
+    // Microphone state
+    this.isRecordingMic = false;
+    this.micMediaRecorder = null;
+    this.micAudioChunks = [];
 
     // Console
     this.consoleOutput = document.getElementById("console-output");
@@ -169,7 +180,92 @@ class RoombaCockpit {
     this.log(`Spoke human voice: "${text}"`, "info");
   }
 
-  // --- WebSocket Connection ---
+  async uploadAndGrindAudioBlob(blob) {
+    try {
+      this.log("Processing and converting voice recording to standard WAV...", "info");
+      const wavBlob = await this.blobToWav(blob);
+      const formData = new FormData();
+      formData.append("file", wavBlob, "voice_recording.wav");
+      this.log("Grinding audio signal into 64Hz Roomba formant notes...", "info");
+      const res = await fetch("/api/sound/grind_audio", {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Audio grinding failed");
+      }
+      const data = await res.json();
+      this.log(`Voice ground into ${data.notes_count} Roomba notes (${data.duration_s ? data.duration_s.toFixed(2) + "s" : ""}) and streaming to robot speaker!`, "success");
+      if (this.micStatusBadge) {
+        this.micStatusBadge.textContent = "IDLE";
+        this.micStatusBadge.className = "badge badge-mode";
+      }
+    } catch (err) {
+      this.log(`Audio Grinder error: ${err.message}`, "error");
+      if (this.micStatusBadge) {
+        this.micStatusBadge.textContent = "ERROR";
+        this.micStatusBadge.className = "badge badge-danger";
+      }
+    }
+  }
+
+  async blobToWav(blob) {
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const arrayBuffer = await blob.arrayBuffer();
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+      const targetSampleRate = 16000;
+      const offlineCtx = new OfflineAudioContext(
+        1,
+        Math.max(16, Math.ceil(audioBuffer.duration * targetSampleRate)),
+        targetSampleRate
+      );
+      const source = offlineCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(offlineCtx.destination);
+      source.start(0);
+      const rendered = await offlineCtx.startRendering();
+
+      const channelData = rendered.getChannelData(0);
+      const wavBuffer = this.pcmToWav(channelData, targetSampleRate);
+      return new Blob([wavBuffer], { type: "audio/wav" });
+    } catch (e) {
+      console.warn("Web Audio decode fallback to raw blob:", e);
+      return blob;
+    }
+  }
+
+  pcmToWav(samples, sampleRate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const writeString = (offset, string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+    writeString(0, "RIFF");
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(8, "WAVE");
+    writeString(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // Mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, "data");
+    view.setUint32(40, samples.length * 2, true);
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+      let s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
+  }
+
 
   connectWebSocket() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -889,29 +985,125 @@ class RoombaCockpit {
       });
     }
 
-    if (this.btnPlayHumanSound && this.selectHumanSound) {
-      this.btnPlayHumanSound.addEventListener("click", () => {
-        const sound = this.selectHumanSound.value;
-        this.executeAction("human", { sound });
-      });
-    }
-
     if (this.btnSpeakVoice && this.inputSpeechText) {
-      this.btnSpeakVoice.addEventListener("click", () => {
+      this.btnSpeakVoice.addEventListener("click", async () => {
         const text = this.inputSpeechText.value.trim();
         if (!text) {
           alert("Please enter text to speak.");
           return;
         }
-        const target = this.selectSpeechTarget ? this.selectSpeechTarget.value : "both";
+        const mode = this.selectSpeechMode ? this.selectSpeechMode.value : "formant_interleave";
+        const target = this.selectSpeechTarget ? this.selectSpeechTarget.value : "roomba";
+
         if (target === "browser" || target === "both") {
           this.speakHumanVoice(text);
         }
+
         if (target === "roomba" || target === "both") {
-          this.executeAction("human", { text });
+          try {
+            this.log(`Grinding speech "${text}" (${mode})...`, "info");
+            const res = await fetch("/api/sound/speech", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ text, mode }),
+            });
+            if (!res.ok) {
+              const err = await res.json();
+              throw new Error(err.detail || "Speech failed");
+            }
+            const data = await res.json();
+            this.log(`Roomba speaker vocalized "${text}" (${data.notes_count} notes)`, "success");
+          } catch (err) {
+            this.log(`Speech Grinder error: ${err.message}`, "error");
+          }
         }
       });
     }
+
+    // Live Microphone Voice Grinder
+    if (this.btnRecordMic) {
+      this.btnRecordMic.addEventListener("click", async () => {
+        if (!this.isRecordingMic) {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            this.micMediaRecorder = new MediaRecorder(stream);
+            this.micAudioChunks = [];
+            this.micMediaRecorder.ondataavailable = (e) => {
+              if (e.data.size > 0) this.micAudioChunks.push(e.data);
+            };
+            this.micMediaRecorder.onstop = async () => {
+              const blob = new Blob(this.micAudioChunks, { type: this.micMediaRecorder.mimeType });
+              stream.getTracks().forEach((t) => t.stop());
+              await this.uploadAndGrindAudioBlob(blob);
+            };
+            this.micMediaRecorder.start();
+            this.isRecordingMic = true;
+            this.btnRecordMic.classList.add("mic-recording");
+            if (this.micIcon) this.micIcon.textContent = "⏹️";
+            if (this.micLabel) this.micLabel.textContent = "Stop & Grind Voice to Roomba";
+            if (this.micStatusBadge) {
+              this.micStatusBadge.textContent = "RECORDING...";
+              this.micStatusBadge.className = "badge badge-danger";
+            }
+            this.log("Microphone recording started. Speak now!", "info");
+          } catch (err) {
+            this.log(`Microphone access error: ${err.message}`, "error");
+            alert(`Microphone access error: ${err.message}`);
+          }
+        } else {
+          this.micMediaRecorder.stop();
+          this.isRecordingMic = false;
+          this.btnRecordMic.classList.remove("mic-recording");
+          if (this.micIcon) this.micIcon.textContent = "🎤";
+          if (this.micLabel) this.micLabel.textContent = "Record Voice & Grind to Roomba";
+          if (this.micStatusBadge) {
+            this.micStatusBadge.textContent = "GRINDING...";
+            this.micStatusBadge.className = "badge badge-warn";
+          }
+          this.log("Recording stopped. Grinding audio for Roomba speaker...", "info");
+        }
+      });
+    }
+
+    // Audio File Grinder (.wav)
+    if (this.btnGrindFile && this.inputAudioFile) {
+      this.btnGrindFile.addEventListener("click", async () => {
+        if (!this.inputAudioFile.files || this.inputAudioFile.files.length === 0) {
+          alert("Please select a .wav audio file first.");
+          return;
+        }
+        const file = this.inputAudioFile.files[0];
+        try {
+          this.log(`Uploading & grinding "${file.name}"...`, "info");
+          const formData = new FormData();
+          formData.append("file", file);
+          const res = await fetch("/api/sound/grind_audio", {
+            method: "POST",
+            body: formData,
+          });
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "File grinding failed");
+          }
+          const data = await res.json();
+          this.log(`Audio file ground into ${data.notes_count} Roomba notes (${data.duration_s?.toFixed(2)}s) and playing!`, "success");
+        } catch (err) {
+          this.log(`File grinding error: ${err.message}`, "error");
+        }
+      });
+    }
+
+    // Interactive Human Soundboard Chips
+    const soundChips = document.querySelectorAll(".btn-sound-chip");
+    soundChips.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        const sound = chip.getAttribute("data-sound");
+        if (sound) {
+          this.log(`Triggered vocal sound: "${sound}"`, "info");
+          this.executeAction("human", { sound });
+        }
+      });
+    });
 
     if (this.btnPlayRtttl && this.inputRtttl) {
       this.btnPlayRtttl.addEventListener("click", () => {

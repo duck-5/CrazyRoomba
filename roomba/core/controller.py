@@ -22,6 +22,9 @@ from roomba.driver.sound import (
     rtttl_to_notes,
     text_to_morse_notes,
     text_to_vocal_tones,
+    grind_audio_to_roomba_notes,
+    grind_wav_bytes_to_notes,
+    synthesize_and_grind_speech,
 )
 from roomba.modes.manager import ModeManager
 from roomba.modes.manual import ManualMode
@@ -411,7 +414,7 @@ class RobotController:
             self.log_event("info", f"Transmitted SOS emergency signal ({len(notes)} tones/gaps)")
             return {"status": "ok", "action": "sos", "text": "SOS", "notes_count": len(notes)}
 
-        elif act in ("human", "vocal", "voice", "speak"):
+        elif act in ("human", "vocal", "voice", "speak", "speak_roomba"):
             sound_name = str(kwargs.get("sound", kwargs.get("preset", "hello"))).lower()
             if sound_name in HUMAN_SOUNDS:
                 notes = HUMAN_SOUNDS[sound_name]
@@ -420,11 +423,35 @@ class RobotController:
                 return {"status": "ok", "action": act, "sound": sound_name, "notes_count": len(notes)}
             else:
                 text = str(kwargs.get("text", sound_name))
-                notes = text_to_vocal_tones(text)
+                mode = str(kwargs.get("mode", "formant_interleave"))
+                try:
+                    notes = synthesize_and_grind_speech(text, mode=mode)
+                except Exception as e:
+                    logger.warning(f"Error in synthesize_and_grind_speech: {e}")
+                    notes = text_to_vocal_tones(text)
+                if not notes:
+                    notes = text_to_vocal_tones(text)
                 if notes:
                     await self.client.play_tune(notes)
-                self.log_event("info", f"Synthesized Human Voice tones for '{text}' ({len(notes)} notes)")
+                self.log_event("info", f"Ground and played Human Voice for '{text}' ({len(notes)} notes)")
                 return {"status": "ok", "action": act, "text": text, "notes_count": len(notes)}
+
+        elif act in ("grind_audio", "audio_grind"):
+            import base64
+            audio_b64 = kwargs.get("audio_base64")
+            wav_bytes = kwargs.get("wav_bytes")
+            if audio_b64 and not wav_bytes:
+                wav_bytes = base64.b64decode(audio_b64)
+            if not wav_bytes:
+                raise ValueError("No audio payload provided for grind_audio")
+            mode = str(kwargs.get("mode", "formant_interleave"))
+            notes = grind_wav_bytes_to_notes(wav_bytes, mode=mode)
+            if notes:
+                await self.client.play_tune(notes)
+            dur_s = sum(d for _, d in notes) / 64.0 if notes else 0.0
+            self.log_event("info", f"Ground audio signal into {len(notes)} Roomba notes ({dur_s:.2f}s)")
+            return {"status": "ok", "action": "grind_audio", "notes_count": len(notes), "duration_s": dur_s}
+
 
         elif act == "clean":
             self.disarm()

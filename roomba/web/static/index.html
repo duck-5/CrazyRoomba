@@ -354,40 +354,71 @@
           </div>
         </div>
 
-        <!-- Human Vocal Gestures (Roomba Speaker) -->
+        <!-- Human Speech & Voice Signal Grinder -->
         <div class="sound-group">
-          <label class="sound-label" for="select-human-sound">Human Vocal Sounds (Onboard Speaker):</label>
+          <label class="sound-label" for="input-speech-text">Human Speech & Voice Signal Grinder:</label>
           <div class="sound-input-row">
-            <select id="select-human-sound" class="sound-select">
-              <option value="hello">🗣️ "Hello!" (Greeting Inflection)</option>
-              <option value="uh_oh">⚠️ "Uh-Oh!" (Mistake / Warning)</option>
-              <option value="laugh">😂 "Ha-Ha-Ha" (Laughter)</option>
-              <option value="wow">😲 "Wow!" (Wonder Scoop)</option>
-              <option value="yes">✅ "Yes!" (Affirmative)</option>
-              <option value="no">❌ "No-No!" (Refusal)</option>
-              <option value="sigh">💨 "Sigh" (Exhale Release)</option>
-              <option value="yawn">🥱 "Yawn" (Vocal Stretch)</option>
-              <option value="sneeze">🤧 "Achoo!" (Sneeze)</option>
-              <option value="whistle">🎶 Human Whistle</option>
-              <option value="giggle">🤭 Playful Giggle</option>
-              <option value="hmm">🤔 "Hmm..." (Thinking)</option>
-              <option value="goodbye">👋 "Goodbye!" (Sign-off)</option>
+            <input type="text" id="input-speech-text" class="sound-input" placeholder="Type phrase (e.g. Hello, I am Roomba)..." value="Hello, I am Roomba." maxlength="100">
+            <select id="select-speech-mode" class="sound-select" style="max-width: 170px;" title="Signal Grinder Algorithm">
+              <option value="formant_interleave">Formant TDM (Vowels)</option>
+              <option value="dominant_peak">Dominant Peak</option>
+              <option value="pitch_f0">Pitch F0 Contour</option>
             </select>
-            <button id="btn-play-human-sound" class="btn btn-secondary">🗣️ Vocalize</button>
+            <select id="select-speech-target" class="sound-select" style="max-width: 140px;">
+              <option value="roomba">Robot Speaker</option>
+              <option value="both">Both (Synced)</option>
+              <option value="browser">Human Voice</option>
+            </select>
+            <button id="btn-speak-voice" class="btn btn-secondary">🎙️ Speak</button>
           </div>
         </div>
 
-        <!-- Human Speech Synthesis (TTS & Roomba Voice) -->
+        <!-- Live Microphone Voice Grinder -->
         <div class="sound-group">
-          <label class="sound-label" for="input-speech-text">Human Speech & Voice (TTS + Robot):</label>
+          <label class="sound-label">Live Microphone Voice Grinder (Browser Mic → Roomba Speaker):</label>
           <div class="sound-input-row">
-            <input type="text" id="input-speech-text" class="sound-input" placeholder="Type words to speak..." value="Hello! I am Roomba." maxlength="100">
-            <select id="select-speech-target" class="sound-select" style="max-width: 140px;">
-              <option value="both">Both (Synced)</option>
-              <option value="browser">Human Voice</option>
-              <option value="roomba">Robot Speaker</option>
-            </select>
-            <button id="btn-speak-voice" class="btn btn-secondary">🎙️ Speak</button>
+            <button id="btn-record-mic" class="btn btn-secondary" style="flex: 1;">
+              <span id="mic-icon">🎤</span> <span id="mic-label">Record Voice & Grind to Roomba</span>
+            </button>
+            <span id="mic-status-badge" class="badge badge-mode">IDLE</span>
+          </div>
+        </div>
+
+        <!-- Audio File Grinder (.wav) -->
+        <div class="sound-group">
+          <label class="sound-label" for="input-audio-file">Grind Custom Audio File (.wav):</label>
+          <div class="sound-input-row">
+            <input type="file" id="input-audio-file" accept=".wav,audio/wav" class="sound-input" style="padding: 4px 8px;">
+            <button id="btn-grind-file" class="btn btn-secondary">⚙️ Grind & Play</button>
+          </div>
+        </div>
+
+        <!-- Human Vocal Soundboard -->
+        <div class="sound-group">
+          <label class="sound-label">Interactive Human Soundboard (Onboard Roomba 1W Speaker):</label>
+          <div class="soundboard-grid" id="soundboard-container">
+            <!-- Words -->
+            <button class="btn-sound-chip" data-sound="hello">🗣️ "Hello!"</button>
+            <button class="btn-sound-chip" data-sound="roomba">🤖 "Roomba"</button>
+            <button class="btn-sound-chip" data-sound="yes">✅ "Yes!"</button>
+            <button class="btn-sound-chip" data-sound="no">❌ "No-No!"</button>
+            <button class="btn-sound-chip" data-sound="help">🆘 "Help!"</button>
+            <button class="btn-sound-chip" data-sound="danger">🚨 "Danger!"</button>
+            <button class="btn-sound-chip" data-sound="stop">✋ "Stop!"</button>
+            <button class="btn-sound-chip" data-sound="thank_you">🙏 "Thank You"</button>
+            <button class="btn-sound-chip" data-sound="goodbye">👋 "Goodbye!"</button>
+            <!-- Vocal Gestures -->
+            <button class="btn-sound-chip" data-sound="laugh">😂 Laugh</button>
+            <button class="btn-sound-chip" data-sound="scream">😱 Scream</button>
+            <button class="btn-sound-chip" data-sound="sigh">💨 Sigh</button>
+            <button class="btn-sound-chip" data-sound="cough">😷 Cough</button>
+            <button class="btn-sound-chip" data-sound="gasp">😲 Gasp</button>
+            <button class="btn-sound-chip" data-sound="sneeze">🤧 Sneeze</button>
+            <button class="btn-sound-chip" data-sound="whistle">🎶 Whistle</button>
+            <button class="btn-sound-chip" data-sound="yawn">🥱 Yawn</button>
+            <button class="btn-sound-chip" data-sound="giggle">🤭 Giggle</button>
+            <button class="btn-sound-chip" data-sound="groan">😫 Groan</button>
+            <button class="btn-sound-chip" data-sound="uh_oh">⚠️ "Uh-Oh!"</button>
           </div>
         </div>
 
@@ -413,6 +444,7 @@
           </div>
         </div>
       </div>
+
     </section>
 
     <!-- Bottom Full-Width Row: Event Console & Diagnostics -->

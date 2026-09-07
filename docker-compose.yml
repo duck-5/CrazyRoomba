@@ -8,12 +8,12 @@ version: "3.8"
 services:
   # ---------------------------------------------------------------------------
   # Primary Service: Roomba Web Cockpit & Autonomy Controller (Hardware Mode)
-  # Run: docker compose -f deploy/docker-compose.yml up -d
+  # Run: docker compose up -d
   # ---------------------------------------------------------------------------
   roomba:
     build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     image: roomba-controller:latest
     container_name: roomba-cockpit
     restart: unless-stopped
@@ -31,12 +31,14 @@ services:
       - ROOMBA_DEADMAN_TIMEOUT=${ROOMBA_DEADMAN_TIMEOUT:-0.5}
       - ROOMBA_CAMERA_ENABLED=${ROOMBA_CAMERA_ENABLED:-false}
       - ROOMBA_CAMERA_INDEX=${ROOMBA_CAMERA_INDEX:-0}
+    # Privileged mode & /dev mount grant dynamic access to USB CDC ACM ports (/dev/ttyACM*) and cameras
     privileged: true
     volumes:
       - /dev:/dev
     group_add:
       - dialout
       - video
+    # SD Card safety: rotate logs to prevent filling Raspberry Pi storage
     logging:
       driver: "json-file"
       options:
@@ -51,12 +53,12 @@ services:
 
   # ---------------------------------------------------------------------------
   # Simulation Profile: Offline Mock Roomba (No Hardware Required)
-  # Run: docker compose -f deploy/docker-compose.yml --profile mock up
+  # Run: docker compose --profile mock up
   # ---------------------------------------------------------------------------
   roomba-mock:
     build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     image: roomba-controller:latest
     container_name: roomba-cockpit-mock
     profiles:
@@ -86,12 +88,12 @@ services:
 
   # ---------------------------------------------------------------------------
   # CLI Profile: Interactive Terminal WASD Teleoperation
-  # Run: docker compose -f deploy/docker-compose.yml --profile teleop run --rm roomba-teleop
+  # Run: docker compose --profile teleop run --rm roomba-teleop
   # ---------------------------------------------------------------------------
   roomba-teleop:
     build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     image: roomba-controller:latest
     container_name: roomba-teleop
     profiles:

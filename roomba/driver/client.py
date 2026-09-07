@@ -233,19 +233,47 @@ class RoombaClient:
     async def play_tune(self, notes: Sequence[Tuple[int, int]], song_slot: int = 0) -> None:
         """
         Play an arbitrary sequence of notes.
-        If more than 16 notes, automatically chunks them into 16-note batches,
-        uploads to song_slot, plays, and waits for completion before sending the next chunk.
+        Uses double-buffered ping-pong streaming across song slots 0 and 1
+        so that subsequent 16-note batches are pre-uploaded while the current batch is playing,
+        minimizing inter-chunk audio gaps for continuous vocal playback.
         """
         if not notes:
             return
 
         chunk_size = 16
-        for i in range(0, len(notes), chunk_size):
-            chunk = list(notes[i:i + chunk_size])
-            await self.define_song(song_slot, chunk)
+        chunks = [list(notes[i:i + chunk_size]) for i in range(0, len(notes), chunk_size)]
+        if not chunks:
+            return
+
+        if len(chunks) == 1:
+            await self.define_song(song_slot, chunks[0])
             await self.play_song(song_slot)
-            total_duration_sec = sum(dur for _, dur in chunk) / 64.0
-            await asyncio.sleep(total_duration_sec + 0.05)
+            dur = sum(dur for _, dur in chunks[0]) / 64.0
+            await asyncio.sleep(dur)
+            return
+
+        # Double buffering between slot 0 and slot 1
+        slot_a = 0
+        slot_b = 1
+
+        curr_slot = slot_a
+        await self.define_song(curr_slot, chunks[0])
+        await self.play_song(curr_slot)
+
+        for k in range(len(chunks)):
+            chunk_dur = sum(dur for _, dur in chunks[k]) / 64.0
+            next_idx = k + 1
+            if next_idx < len(chunks):
+                next_slot = slot_b if curr_slot == slot_a else slot_a
+                # Pre-upload next chunk during playback of current chunk
+                await self.define_song(next_slot, chunks[next_idx])
+                # Wait remaining duration of current chunk
+                await asyncio.sleep(max(0.01, chunk_dur - 0.03))
+                await self.play_song(next_slot)
+                curr_slot = next_slot
+            else:
+                await asyncio.sleep(chunk_dur)
+
 
     async def beep(self, note: int = 72, duration: int = 16) -> None:
         """Play a musical beep using Song (140) and Play (141) opcodes."""
