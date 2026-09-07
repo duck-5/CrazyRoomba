@@ -14,6 +14,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10 \
     DEBIAN_FRONTEND=noninteractive \
     ROOMBA_HOST=0.0.0.0 \
     ROOMBA_HTTP_PORT=8000 \
@@ -47,7 +49,7 @@ WORKDIR /app
 
 # 4. Install Python dependencies
 COPY requirements.txt pyproject.toml README.md ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --default-timeout=120 --retries=10 -r requirements.txt
 
 # 5. Copy project source code
 COPY roomba/ ./roomba/
