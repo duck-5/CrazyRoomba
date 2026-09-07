@@ -243,6 +243,54 @@ def test_sound_and_melody_actions():
         assert res_speak.json()["action"] == "speak"
         assert res_speak.json()["notes_count"] > 0
 
+        # Expanded vocal gestures
+        assert "scream" in data["human_sounds"]
+        assert "cough" in data["human_sounds"]
+        assert "roomba" in data["human_sounds"]
+        res_scream = client.post("/api/action", json={"action": "human", "sound": "scream"})
+        assert res_scream.status_code == 200
+        assert res_scream.json()["sound"] == "scream"
+
+        # 7. Dedicated Speech Grinder Endpoint (/api/sound/speech)
+        res_grind_speech = client.post("/api/sound/speech", json={"text": "Roomba help", "mode": "formant_interleave"})
+        assert res_grind_speech.status_code == 200
+        assert res_grind_speech.json()["action"] == "speak_roomba"
+        assert res_grind_speech.json()["notes_count"] > 0
+
+        # Dominant peak mode
+        res_peak_speech = client.post("/api/sound/speech", json={"text": "Danger", "mode": "dominant_peak"})
+        assert res_peak_speech.status_code == 200
+        assert res_peak_speech.json()["notes_count"] > 0
+
+        # 8. Dedicated Audio Grinder Endpoint (/api/sound/grind_audio) with WAV upload
+        import io
+        import base64
+        import numpy as np
+        from scipy.io import wavfile
+
+        sr = 16000
+        t = np.linspace(0, 0.25, int(sr * 0.25), endpoint=False)
+        sig = (0.5 * np.sin(2 * np.pi * 500 * t) * 32767).astype(np.int16)
+        buf = io.BytesIO()
+        wavfile.write(buf, sr, sig)
+        wav_bytes = buf.getvalue()
+
+        files = {"file": ("test_voice.wav", wav_bytes, "audio/wav")}
+        res_upload = client.post("/api/sound/grind_audio", files=files)
+        assert res_upload.status_code == 200
+        upload_data = res_upload.json()
+        assert upload_data["action"] == "grind_audio"
+        assert upload_data["notes_count"] > 0
+        assert upload_data["duration_s"] > 0.0
+
+        # Base64 payload via /api/action
+        b64_payload = base64.b64encode(wav_bytes).decode("ascii")
+        res_b64 = client.post("/api/action", json={"action": "grind_audio", "audio_base64": b64_payload})
+        assert res_b64.status_code == 200
+        assert res_b64.json()["action"] == "grind_audio"
+        assert res_b64.json()["notes_count"] > 0
+
 
 if __name__ == "__main__":
     pytest.main(["-v", __file__])
+

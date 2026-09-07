@@ -12,9 +12,16 @@ import re
 import tempfile
 from typing import List, Tuple, Dict, Any, Optional, Union
 
-import numpy as np
-import scipy.signal as signal
-from scipy.io import wavfile
+try:
+    import numpy as np
+    import scipy.signal as signal
+    from scipy.io import wavfile
+    _HAS_DSP = True
+except ImportError:
+    _HAS_DSP = False
+    np = None  # type: ignore
+    signal = None  # type: ignore
+    wavfile = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +376,9 @@ def grind_audio_to_roomba_notes(
     - Time-Division Formant Multiplexing (alternating F1 & F2 at 64 Hz) for composite vowel perception.
     - Run-length duration compression (up to 250/64s) for smooth transitions and compact packets.
     """
+    if not _HAS_DSP:
+        raise RuntimeError("numpy and scipy are required for audio analysis. Install with: pip install numpy scipy")
+
     if audio_data is None or len(audio_data) == 0:
         return []
 
@@ -495,11 +505,13 @@ def grind_wav_bytes_to_notes(
     )
 
 
-def generate_phonetic_waveform(text: str, sample_rate: int = 16000) -> np.ndarray:
+def generate_phonetic_waveform(text: str, sample_rate: int = 16000) -> Any:
     """
     Pure Python acoustic vocal tract acoustic synthesizer (fallback when SAPI is unavailable).
     Models glottal pulse train excitation and F1/F2 vocal tract filter resonances.
     """
+    if not _HAS_DSP:
+        raise RuntimeError("numpy and scipy are required for phonetic waveform synthesis. Install with: pip install numpy scipy")
     VOWEL_PARAMS: Dict[str, Tuple[float, float, float]] = {
         "a": (130.0, 750.0, 1200.0),
         "e": (140.0, 500.0, 1800.0),

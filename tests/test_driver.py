@@ -114,3 +114,64 @@ def test_odometry_kinematics_and_rollover():
     assert client.total_distance_mm == 0.0
     assert client.total_angle_deg == 0.0
 
+
+def test_sound_grind_audio_to_roomba_notes():
+    """Verify audio grinding DSP pipeline handles silence, tones, consonants, and run-length compression."""
+    import numpy as np
+    from roomba.driver.sound import grind_audio_to_roomba_notes
+
+    sr = 16000
+    # 1. Pure silence -> all rests (0, dur)
+    silence = np.zeros(sr, dtype=np.float32)
+    notes_silence = grind_audio_to_roomba_notes(silence, sr)
+    assert len(notes_silence) >= 1
+    assert all(p == 0 for p, _ in notes_silence)
+
+    # 2. Pure 440 Hz tone (A4, MIDI 69)
+    t = np.linspace(0, 0.5, int(sr * 0.5), endpoint=False)
+    tone_440 = (0.8 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    notes_tone = grind_audio_to_roomba_notes(tone_440, sr, mode="dominant_peak")
+    assert len(notes_tone) >= 1
+    # Check that the detected pitch is close to 69 (A4)
+    pitches = [p for p, _ in notes_tone if p > 0]
+    assert len(pitches) > 0
+    assert any(abs(p - 69) <= 2 for p in pitches)
+
+    # 3. High-frequency noise (unvoiced consonant simulation)
+    noise = np.random.uniform(-0.8, 0.8, int(sr * 0.2)).astype(np.float32)
+    notes_noise = grind_audio_to_roomba_notes(noise, sr)
+    assert len(notes_noise) >= 1
+    # High ZCR noise maps to higher pitch range
+    high_pitches = [p for p, _ in notes_noise if p >= 80]
+    assert len(high_pitches) > 0
+
+
+def test_sound_speech_synthesis_and_wav_grinding():
+    """Verify speech synthesis and WAV bytes grinding produce valid Roomba note sequences."""
+    import io
+    import numpy as np
+    from scipy.io import wavfile
+    from roomba.driver.sound import synthesize_and_grind_speech, grind_wav_bytes_to_notes
+
+    # 1. Speech synthesis
+    notes = synthesize_and_grind_speech("Roomba start cleaning")
+    assert len(notes) > 0
+    for pitch, dur in notes:
+        assert 0 <= pitch <= 127
+        assert 1 <= dur <= 255
+
+    # 2. WAV byte buffer grinding
+    sr = 16000
+    t = np.linspace(0, 0.3, int(sr * 0.3), endpoint=False)
+    sig = (0.6 * np.sin(2 * np.pi * 587 * t) * 32767).astype(np.int16) # D5, ~MIDI 74
+    buf = io.BytesIO()
+    wavfile.write(buf, sr, sig)
+    wav_bytes = buf.getvalue()
+
+    ground_notes = grind_wav_bytes_to_notes(wav_bytes)
+    assert len(ground_notes) > 0
+    detected_pitches = [p for p, _ in ground_notes if p > 0]
+    assert len(detected_pitches) > 0
+    assert any(abs(p - 74) <= 2 for p in detected_pitches)
+
+
