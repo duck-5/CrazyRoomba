@@ -193,38 +193,54 @@ curl -X POST http://localhost:8000/api/modes/start -H "Content-Type: application
 
 ---
 
-## 7. Deployment on Raspberry Pi
+## 7. Turnkey Automated Setup on Raspberry Pi / Linux
 
-### Option A: Systemd Auto-Start Daemon
-To start the Roomba controller automatically on Raspberry Pi boot:
+The easiest way to get started on a Raspberry Pi or Linux system:
 
-1. Edit [`deploy/roomba.service`](deploy/roomba.service) to match your Pi username and directory path (default: `/home/pi/roomba-controller`).
-2. Install and enable the service:
-   ```bash
-   sudo cp deploy/roomba.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now roomba.service
-   ```
-3. Check status:
-   ```bash
-   sudo systemctl status roomba.service
-   ```
+```bash
+chmod +x setup.sh
+./setup.sh
+```
 
-### Option B: Docker Container
-1. Build and launch:
-   ```bash
-   docker compose -f deploy/docker-compose.yml up -d --build
-   ```
-2. Inspect logs:
-   ```bash
-   docker compose -f deploy/docker-compose.yml logs -f
-   ```
+The automated installer will:
+1. Check and install **Docker** and **Docker Compose** plugin if missing.
+2. Configure **user group permissions** (`docker`, `dialout`, `video`) and **udev rules** for Roomba serial USB communication.
+3. Automatically set up `.env` configuration.
+4. Build the multi-architecture Docker container.
+5. Create, enable, and start a `systemd` auto-start background service (`roomba.service`).
+6. Print your Pi's local network IP and Cockpit URL.
 
 ---
 
-## 8. Automated Testing
+## 8. Manual Deployment Options
 
-Run the full test suite (26 unit and integration tests):
+### Option A: Docker Compose
+```bash
+# Build and run the controller
+docker compose up -d --build
+
+# View real-time logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+### Option B: Systemd Auto-Start Service (Native or Docker)
+- **Docker Service:** [`deploy/roomba.service`](deploy/roomba.service) runs `docker compose up -d` on system boot.
+- **Native Python Service:** [`deploy/roomba-native.service`](deploy/roomba-native.service) runs bare-metal python.
+```bash
+sudo cp deploy/roomba.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now roomba.service
+sudo systemctl status roomba.service
+```
+
+---
+
+## 9. Automated Testing
+
+Run the full test suite (28 unit and integration tests):
 
 ```powershell
 pytest -v
@@ -232,6 +248,6 @@ pytest -v
 
 ---
 
-## 9. License
+## 10. License
 
 Released under the MIT License.
