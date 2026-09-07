@@ -1,6 +1,5 @@
 """
 Testing script to move the Roomba's right wheel gently.
-
 Connects to Roomba 960 over micro-USB, verifies communication,
 and commands only the right wheel to rotate forward at a controlled
 speed for a brief duration before safely stopping.
@@ -11,10 +10,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from roomba_client import RoombaClient, find_roomba_port
+from pathlib import Path
+from typing import Optional
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-import sys
+from roomba.driver.client import RoombaClient
+from roomba.driver.discovery import find_roomba_port
 
 # Ensure UTF-8 stdout on Windows console
 if sys.platform == "win32":
@@ -26,11 +30,11 @@ if sys.platform == "win32":
 
 
 async def run_wheel_test(
-    port: str | None = None,
+    port: Optional[str] = None,
     speed: int = 100,
     duration: float = 1.0,
     mode: str = "safe",
-):
+) -> None:
     print("=" * 60)
     print("              Roomba Right Wheel Motion Test")
     print("=" * 60)
@@ -90,7 +94,7 @@ async def run_wheel_test(
         print("Disconnected cleanly.\n")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Move Roomba right wheel for testing.")
     parser.add_argument("--port", type=str, default=None, help="COM port (e.g. COM11). Auto-detected if omitted.")
     parser.add_argument("--speed", type=int, default=100, help="Right wheel velocity in mm/s (-500 to 500, default: 100)")

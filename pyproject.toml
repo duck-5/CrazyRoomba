@@ -33,10 +33,15 @@ vision = [
 ]
 
 [project.scripts]
-roomba-server = "scripts.run_server:main"
-roomba-teleop = "scripts.teleop_cli:main"
+roomba = "roomba.__main__:main"
+roomba-web = "scripts.run_server:main"
+roomba-teleop = "scripts.teleop:main"
+roomba-monitor = "scripts.monitor:main"
 roomba-verify = "scripts.verify:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["roomba*"]
+
+[tool.setuptools.package-data]
+"roomba.web" = ["static/*", "static/**/*"]

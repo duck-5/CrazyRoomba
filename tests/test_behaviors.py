@@ -102,3 +102,21 @@ async def test_follow_person_behavior_steering(controller):
     )
     cmd_left = await follower.update(ctx_left)
     assert cmd_left.right > cmd_left.left  # Steering left!
+
+
+@pytest.mark.asyncio
+async def test_modes_architecture(controller):
+    """Verify roomba.modes ModeManager, WanderMode, and FollowPersonMode."""
+    from roomba.modes import ModeManager, WanderMode, FollowPersonMode, ManualMode
+    mm = controller.mode_manager
+    modes = mm.list_modes()
+    names = [m["name"] for m in modes]
+    assert "manual" in names
+    assert "wander" in names
+    assert "follow_person" in names
+
+    await mm.set_active("wander")
+    assert mm.active_name == "wander"
+    await mm.stop_active()
+    assert mm.active_name == "manual"
+

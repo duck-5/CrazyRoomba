@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import pytest
 from fastapi.testclient import TestClient
-from web_server import app, controller
+from roomba.web.app import app, controller
 
 
 @pytest.fixture(autouse=True)
@@ -246,4 +246,3 @@ def test_sound_and_melody_actions():
 
 if __name__ == "__main__":
     pytest.main(["-v", __file__])
-

@@ -1,8 +1,7 @@
 """
-Roomba 960 Sensor Monitor & Inspector.
-
-Connects to the Roomba 960 over micro-USB, queries all hardware sensors
-via Open Interface Packet 100, and displays a categorized live dashboard or snapshot.
+Roomba 960 Hardware Sensor Monitor & Diagnostic Inspector.
+Connects to Roomba 960 over micro-USB, queries all hardware sensors
+via Open Interface Packet 100, and displays a categorized live dashboard or single snapshot.
 """
 
 from __future__ import annotations
@@ -12,7 +11,16 @@ import asyncio
 import os
 import sys
 import time
-from roomba_client import RoombaClient, RoombaSensors, find_roomba_port
+from pathlib import Path
+from typing import Optional
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from roomba.driver.client import RoombaClient
+from roomba.driver.protocol import RoombaSensors
+from roomba.driver.discovery import find_roomba_port
 
 # Ensure UTF-8 output on Windows console
 if sys.platform == "win32":
@@ -99,18 +107,22 @@ def format_sensor_report(s: RoombaSensors) -> str:
     return "\n".join(lines)
 
 
-async def run_monitor(port: str | None = None, once: bool = False, rate_hz: float = 5.0):
+async def run_monitor(
+    port: Optional[str] = None,
+    baudrate: int = 115200,
+    once: bool = False,
+    rate_hz: float = 5.0,
+) -> None:
     target_port = port or find_roomba_port()
     if not target_port:
         print("[!] Error: Could not locate Roomba serial port.")
         sys.exit(1)
 
-    print(f"Connecting to Roomba on {target_port}...")
-    client = RoombaClient(port=target_port, baudrate=115200)
+    print(f"Connecting to Roomba on {target_port} at {baudrate} baud...")
+    client = RoombaClient(port=target_port, baudrate=baudrate)
 
     try:
         await client.connect()
-        # Initialize in Passive or Safe mode so sensors are queried
         await client.safe_mode()
         await asyncio.sleep(0.1)
 
@@ -127,7 +139,6 @@ async def run_monitor(port: str | None = None, once: bool = False, rate_hz: floa
         while True:
             t0 = time.monotonic()
             sensors = await client.get_sensors()
-            # Clear console screen between refreshes
             os.system("cls" if sys.platform == "win32" else "clear")
             print(format_sensor_report(sensors))
             print(f"Updated at {time.strftime('%H:%M:%S')} (Rate: {rate_hz} Hz). Press Ctrl+C to exit.")
@@ -140,21 +151,20 @@ async def run_monitor(port: str | None = None, once: bool = False, rate_hz: floa
         print("\n\nMonitoring stopped by user.")
     except Exception as e:
         print(f"\n[!] Sensor monitor error: {e}")
-        import traceback
-        traceback.print_exc()
     finally:
         await client.disconnect()
         print("Disconnected cleanly.\n")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Roomba 960 Full Hardware Sensor Monitor.")
-    parser.add_argument("--port", type=str, default=None, help="COM port (e.g. COM11). Auto-detected if omitted.")
-    parser.add_argument("--once", action="store_true", help="Print a single sensor report snapshot and exit.")
-    parser.add_argument("--rate", type=float, default=5.0, help="Live refresh rate in Hz (default: 5.0)")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Roomba 960 Hardware Sensor Monitor.")
+    parser.add_argument("--port", type=str, default=None, help="Serial port (auto-detected if omitted)")
+    parser.add_argument("--baud", type=int, default=115200, help="Baud rate (default: 115200)")
+    parser.add_argument("--once", action="store_true", help="Print single report snapshot and exit")
+    parser.add_argument("--rate", type=float, default=5.0, help="Refresh rate in Hz (default: 5.0)")
     args = parser.parse_args()
 
-    asyncio.run(run_monitor(port=args.port, once=args.once, rate_hz=args.rate))
+    asyncio.run(run_monitor(port=args.port, baudrate=args.baud, once=args.once, rate_hz=args.rate))
 
 
 if __name__ == "__main__":
