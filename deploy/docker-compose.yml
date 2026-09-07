@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  roomba-controller:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: roomba-controller:latest
+    container_name: roomba-cockpit
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ROOMBA_HOST=0.0.0.0
+      - ROOMBA_HTTP_PORT=8000
+      - ROOMBA_MODE=Safe
+      - ROOMBA_TELEMETRY_RATE_HZ=7.0
+      - ROOMBA_BEHAVIOR_RATE_HZ=10.0
+      - ROOMBA_MOCK=false
+    # Hardware access for serial port (Roomba) and camera (/dev/video0)
+    # On Raspberry Pi, the Roomba micro-USB is typically /dev/ttyACM0 or /dev/ttyUSB0
+    privileged: true
+    devices:
+      - "/dev/ttyACM0:/dev/ttyACM0"
+      # - "/dev/ttyUSB0:/dev/ttyUSB0"
+      # - "/dev/video0:/dev/video0"
+    volumes:
+      - /dev:/dev
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

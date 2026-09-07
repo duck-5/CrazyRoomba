@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Roomba 960 Cockpit & Sensor Telemetry</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700;800&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Header Bar -->
+  <header class="navbar">
+    <div class="nav-left">
+      <div class="logo-group">
+        <span class="logo-icon">🤖</span>
+        <div>
+          <h1 class="nav-title">ROOMBA 960 COCKPIT</h1>
+          <span class="nav-subtitle">Open Interface OI v2 Control & Telemetry</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Connection & Port Selector -->
+    <div class="nav-center">
+      <div class="conn-box">
+        <span id="conn-indicator" class="status-dot dot-offline"></span>
+        <span id="conn-status-text">DISCONNECTED</span>
+        <span id="ping-badge" class="badge">-- ms</span>
+      </div>
+      <div class="port-select-box">
+        <select id="port-select" title="Select Serial Port">
+          <option value="">Detecting ports...</option>
+        </select>
+        <button id="btn-refresh-ports" class="btn btn-secondary btn-icon" title="Scan Ports">🔄</button>
+        <button id="btn-connect" class="btn btn-primary">Connect</button>
+        <button id="btn-disconnect" class="btn btn-secondary" style="display: none;">Disconnect</button>
+        <label class="mock-toggle" title="Enable simulation mode without physical hardware">
+          <input type="checkbox" id="mock-checkbox" />
+          <span>Mock Sim</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- E-STOP button -->
+    <div class="nav-right">
+      <button id="btn-estop" class="btn-estop" title="EMERGENCY STOP (Space)">
+        <span class="estop-icon">🛑</span>
+        <span class="estop-text">E-STOP</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Grid Dashboard -->
+  <main class="dashboard-grid">
+
+    <!-- Column 1: Robot Schematic & Safety Interlocks -->
+    <section class="card card-robot">
+      <div class="card-header">
+        <h2>ROBOT SCHEMATIC & SENSORS</h2>
+        <span id="oi-mode-badge" class="badge badge-mode">OFF</span>
+      </div>
+
+      <!-- Top-Down SVG Representation of Roomba -->
+      <div class="schematic-container">
+        <svg id="roomba-svg" viewBox="0 0 300 300" class="roomba-svg">
+          <!-- Outer Shadow & Base Body -->
+          <circle cx="150" cy="150" r="130" class="chassis-outer" />
+          <circle cx="150" cy="150" r="115" class="chassis-inner" />
+
+          <!-- Left Bumper Arc -->
+          <path id="svg-bump-left" d="M 150,20 A 130,130 0 0,0 20,150" class="sensor-bumper" />
+          <!-- Right Bumper Arc -->
+          <path id="svg-bump-right" d="M 280,150 A 130,130 0 0,0 150,20" class="sensor-bumper" />
+
+          <!-- Wheels (Left & Right) -->
+          <g id="svg-wheel-left" class="sensor-wheel" transform="translate(42, 125)">
+            <rect width="18" height="50" rx="6" />
+            <text x="9" y="32" class="wheel-label">L</text>
+          </g>
+          <g id="svg-wheel-right" class="sensor-wheel" transform="translate(240, 125)">
+            <rect width="18" height="50" rx="6" />
+            <text x="9" y="32" class="wheel-label">R</text>
+          </g>
+
+          <!-- Caster Wheel Front -->
+          <rect x="142" y="45" width="16" height="24" rx="4" class="caster-wheel" />
+
+          <!-- Cliff Sensors -->
+          <circle id="svg-cliff-left" cx="55" cy="85" r="7" class="sensor-cliff" />
+          <circle id="svg-cliff-front-left" cx="105" cy="40" r="7" class="sensor-cliff" />
+          <circle id="svg-cliff-front-right" cx="195" cy="40" r="7" class="sensor-cliff" />
+          <circle id="svg-cliff-right" cx="245" cy="85" r="7" class="sensor-cliff" />
+
+          <!-- Wall Sensor indicator -->
+          <circle id="svg-wall" cx="265" cy="120" r="6" class="sensor-wall" />
+
+          <!-- Faceplate / Center Button -->
+          <circle cx="150" cy="150" r="45" class="center-dial" />
+          <text x="150" y="148" class="center-text">CLEAN</text>
+          <text id="svg-driving-text" x="150" y="166" class="center-subtext">IDLE</text>
+        </svg>
+      </div>
+
+      <!-- Sensor State Indicators -->
+      <div class="sensor-pill-grid">
+        <div id="pill-bump-l" class="pill">BUMP L</div>
+        <div id="pill-bump-r" class="pill">BUMP R</div>
+        <div id="pill-drop-l" class="pill">DROP L</div>
+        <div id="pill-drop-r" class="pill">DROP R</div>
+        <div id="pill-cliff-l" class="pill">CLIFF L</div>
+        <div id="pill-cliff-fl" class="pill">CLIFF FL</div>
+        <div id="pill-cliff-fr" class="pill">CLIFF FR</div>
+        <div id="pill-cliff-r" class="pill">CLIFF R</div>
+        <div id="pill-wall" class="pill">WALL</div>
+        <div id="pill-vwall" class="pill">V-WALL</div>
+      </div>
+
+      <!-- Arming & Safety Lockout -->
+      <div class="arm-box">
+        <div class="arm-status-row">
+          <div class="arm-label">
+            <span class="label-title">SAFETY STATUS:</span>
+            <span id="arm-badge" class="badge badge-disarmed">DISARMED</span>
+          </div>
+          <button id="btn-toggle-arm" class="btn btn-arm">ARM ROBOT</button>
+        </div>
+        <p class="arm-hint">When DISARMED, motion controls are inhibited. Arm robot to enable driving.</p>
+      </div>
+    </section>
+
+    <!-- Column 2: Teleoperation & Movement -->
+    <section class="card card-teleop">
+      <div class="card-header">
+        <h2>TELEOPERATION & DRIVE</h2>
+        <span id="drive-state-badge" class="badge">STOPPED</span>
+      </div>
+
+      <!-- Speed Control Slider -->
+      <div class="speed-control-group">
+        <div class="speed-header">
+          <span>DRIVE VELOCITY:</span>
+          <span id="speed-value" class="speed-number">150 mm/s</span>
+        </div>
+        <input type="range" id="speed-slider" min="25" max="500" step="25" value="150" class="slider" />
+        <div class="speed-presets">
+          <button class="btn btn-preset" data-speed="100">Slow (100)</button>
+          <button class="btn btn-preset active" data-speed="150">Cruise (150)</button>
+          <button class="btn btn-preset" data-speed="250">Sprint (250)</button>
+          <button class="btn btn-preset" data-speed="400">Max (400)</button>
+        </div>
+      </div>
+
+      <!-- D-Pad Controls -->
+      <div class="dpad-container">
+        <div class="dpad-row">
+          <button id="btn-forward" class="dpad-btn btn-fwd" title="Drive Forward (W / ↑)">
+            <span class="dpad-icon">▲</span>
+            <span class="dpad-key">W</span>
+          </button>
+        </div>
+        <div class="dpad-row">
+          <button id="btn-left" class="dpad-btn btn-turn" title="Spin Left (A / ←)">
+            <span class="dpad-icon">↺</span>
+            <span class="dpad-key">A</span>
+          </button>
+          <button id="btn-stop" class="dpad-btn btn-center-stop" title="Immediate Stop (Space)">
+            <span class="dpad-icon">■</span>
+          </button>
+          <button id="btn-right" class="dpad-btn btn-turn" title="Spin Right (D / →)">
+            <span class="dpad-icon">↻</span>
+            <span class="dpad-key">D</span>
+          </button>
+        </div>
+        <div class="dpad-row">
+          <button id="btn-backward" class="dpad-btn btn-rev" title="Drive Backward (S / ↓)">
+            <span class="dpad-icon">▼</span>
+            <span class="dpad-key">S</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- WASD HUD Indicator / Clickable Buttons -->
+      <div class="keyboard-hud">
+        <span class="hud-label">KEYBOARD SHORTCUTS & CLICK CONTROLS:</span>
+        <div class="wasd-keys">
+          <div class="key-row">
+            <button type="button" id="key-w" class="key-cap" title="Forward (W / ↑)">W</button>
+          </div>
+          <div class="key-row">
+            <button type="button" id="key-a" class="key-cap" title="Spin Left (A / ←)">A</button>
+            <button type="button" id="key-s" class="key-cap" title="Backward (S / ↓)">S</button>
+            <button type="button" id="key-d" class="key-cap" title="Spin Right (D / →)">D</button>
+            <button type="button" id="key-space" class="key-cap key-space" title="Immediate Stop (Space)">SPACE (STOP)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Discrete Nudge / Step Controls -->
+      <div class="nudge-group">
+        <span class="sub-label">PRECISION STEP NUDGES:</span>
+        <div class="nudge-buttons">
+          <button class="btn btn-nudge" data-action="nudge-fwd">Fwd 0.5s</button>
+          <button class="btn btn-nudge" data-action="nudge-rev">Back 0.5s</button>
+          <button class="btn btn-nudge" data-action="turn-45-l">Left 45°</button>
+          <button class="btn btn-nudge" data-action="turn-45-r">Right 45°</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Column 3: Battery Telemetry & Mode Management -->
+    <section class="card card-power">
+      <div class="card-header">
+        <h2>BATTERY & POWER TELEMETRY</h2>
+        <span id="chg-state-badge" class="badge">Not Charging</span>
+      </div>
+
+      <!-- Battery Meter -->
+      <div class="battery-meter-container">
+        <div class="battery-gauge">
+          <div id="battery-fill" class="battery-fill" style="width: 0%;"></div>
+          <span id="battery-pct-text" class="battery-pct">-- %</span>
+        </div>
+      </div>
+
+      <!-- Telemetry Stats Grid -->
+      <div class="stats-grid">
+        <div class="stat-box">
+          <span class="stat-title">VOLTAGE</span>
+          <span id="stat-voltage" class="stat-value">-- V</span>
+          <span id="stat-voltage-mv" class="stat-sub">-- mV</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-title">CURRENT DRAW</span>
+          <span id="stat-current" class="stat-value">-- mA</span>
+          <span id="stat-power-state" class="stat-sub">Standby</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-title">CHARGE LEVEL</span>
+          <span id="stat-charge" class="stat-value">-- mAh</span>
+          <span id="stat-capacity" class="stat-sub">/ -- mAh</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-title">TEMPERATURE</span>
+          <span id="stat-temp" class="stat-value">-- °C</span>
+          <span class="stat-sub">Battery Pack</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-title">DISTANCE</span>
+          <span id="stat-distance" class="stat-value">0 mm</span>
+          <span class="stat-sub">Total Traveled</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-title">ANGLE</span>
+          <span id="stat-angle" class="stat-value">0°</span>
+          <span class="stat-sub" id="stat-heading">Heading: 0°</span>
+        </div>
+      </div>
+
+      <div style="margin-top: 8px; text-align: right;">
+        <button id="btn-reset-odom" class="btn btn-preset" style="font-size: 0.72rem; padding: 4px 10px;" title="Reset cumulative distance & angle to 0">RESET ODOMETRY</button>
+      </div>
+
+      <!-- Mode Management -->
+      <div class="modes-section">
+        <h3>OI MODE MANAGEMENT</h3>
+        <div class="mode-buttons-grid">
+          <button id="btn-mode-safe" class="btn btn-mode" data-mode="safe">
+            <span class="mode-btn-title">SAFE MODE</span>
+            <span class="mode-btn-desc">Default (Safety stops active)</span>
+          </button>
+          <button id="btn-mode-full" class="btn btn-mode" data-mode="full">
+            <span class="mode-btn-title">FULL MODE</span>
+            <span class="mode-btn-desc">Unrestricted (Stand/Bench test)</span>
+          </button>
+          <button id="btn-mode-passive" class="btn btn-mode" data-mode="passive">
+            <span class="mode-btn-title">PASSIVE</span>
+            <span class="mode-btn-desc">Sensors only, motors locked</span>
+          </button>
+          <button id="btn-mode-off" class="btn btn-mode" data-mode="off">
+            <span class="mode-btn-title">STOP OI</span>
+            <span class="mode-btn-desc">Power down / Sleep</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Autonomous Behaviors & Scripts -->
+      <div class="behaviors-section">
+        <div class="section-title-row">
+          <h3>AUTONOMOUS BEHAVIORS</h3>
+          <span id="active-behavior-badge" class="badge badge-info">MANUAL</span>
+        </div>
+        <div id="behavior-buttons-grid" class="behavior-buttons-grid">
+          <button class="btn btn-behavior active-behavior" data-behavior="manual">
+            <span class="beh-btn-title">🎮 Manual Teleop</span>
+            <span class="beh-btn-desc">Web, WASD & D-Pad drive</span>
+          </button>
+          <button class="btn btn-behavior" data-behavior="wander">
+            <span class="beh-btn-title">🔄 Wander Mode</span>
+            <span class="beh-btn-desc">Obstacle avoidance explore</span>
+          </button>
+          <button class="btn btn-behavior" data-behavior="follow_person">
+            <span class="beh-btn-title">👤 Follow Person</span>
+            <span class="beh-btn-desc">Camera vision tracking (Ready)</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Robot Actions -->
+      <div class="actions-section">
+        <h3>SPECIAL COMMANDS</h3>
+        <div class="action-buttons-row">
+          <button id="btn-act-beep" class="btn btn-secondary">🔊 Quick Beep</button>
+          <button id="btn-act-dock" class="btn btn-secondary">🔌 Seek Dock</button>
+          <button id="btn-act-clean" class="btn btn-secondary">🧹 Clean</button>
+          <button id="btn-act-spot" class="btn btn-secondary">🎯 Spot</button>
+        </div>
+      </div>
+
+      <!-- Sound & Audio Transmitter -->
+      <div class="sound-transmitter-card">
+        <div class="section-title-row">
+          <h3>SPEAKER & AUDIO TRANSMITTER</h3>
+          <span class="badge badge-info">OI OPCODES 140/141</span>
+        </div>
+
+        <!-- Preset Melodies -->
+        <div class="sound-group">
+          <label class="sound-label" for="select-preset-tune">Preset Melody:</label>
+          <div class="sound-input-row">
+            <select id="select-preset-tune" class="sound-select">
+              <option value="mario">🍄 Super Mario Bros</option>
+              <option value="imperial">⚔️ Star Wars Imperial March</option>
+              <option value="charge">🎺 Stadium Fanfare (Charge)</option>
+              <option value="zelda">🗡️ Zelda Secret Chime</option>
+              <option value="alert">🚨 Warning Alert Siren</option>
+              <option value="happy">✨ Cheerful Arpeggio</option>
+              <option value="sad">🌧️ Minor Chime</option>
+              <option value="nokia">📱 Nokia Classic Ringtone</option>
+              <option value="r2d2">🤖 R2-D2 Chirp</option>
+            </select>
+            <button id="btn-play-tune" class="btn btn-secondary">▶ Play Melody</button>
+          </div>
+        </div>
+
+        <!-- Morse Code Audio Transmitter -->
+        <div class="sound-group">
+          <label class="sound-label" for="input-morse-text">Morse Code Audio Transmitter:</label>
+          <div class="sound-input-row">
+            <input type="text" id="input-morse-text" class="sound-input" placeholder="Type text to transmit (e.g. SOS)" value="SOS" maxlength="40">
+            <button id="btn-transmit-morse" class="btn btn-secondary">📡 Transmit</button>
+            <button id="btn-quick-sos" class="btn btn-danger" style="font-weight: 700;">🚨 SOS</button>
+          </div>
+        </div>
+
+        <!-- Human Vocal Gestures (Roomba Speaker) -->
+        <div class="sound-group">
+          <label class="sound-label" for="select-human-sound">Human Vocal Sounds (Onboard Speaker):</label>
+          <div class="sound-input-row">
+            <select id="select-human-sound" class="sound-select">
+              <option value="hello">🗣️ "Hello!" (Greeting Inflection)</option>
+              <option value="uh_oh">⚠️ "Uh-Oh!" (Mistake / Warning)</option>
+              <option value="laugh">😂 "Ha-Ha-Ha" (Laughter)</option>
+              <option value="wow">😲 "Wow!" (Wonder Scoop)</option>
+              <option value="yes">✅ "Yes!" (Affirmative)</option>
+              <option value="no">❌ "No-No!" (Refusal)</option>
+              <option value="sigh">💨 "Sigh" (Exhale Release)</option>
+              <option value="yawn">🥱 "Yawn" (Vocal Stretch)</option>
+              <option value="sneeze">🤧 "Achoo!" (Sneeze)</option>
+              <option value="whistle">🎶 Human Whistle</option>
+              <option value="giggle">🤭 Playful Giggle</option>
+              <option value="hmm">🤔 "Hmm..." (Thinking)</option>
+              <option value="goodbye">👋 "Goodbye!" (Sign-off)</option>
+            </select>
+            <button id="btn-play-human-sound" class="btn btn-secondary">🗣️ Vocalize</button>
+          </div>
+        </div>
+
+        <!-- Human Speech Synthesis (TTS & Roomba Voice) -->
+        <div class="sound-group">
+          <label class="sound-label" for="input-speech-text">Human Speech & Voice (TTS + Robot):</label>
+          <div class="sound-input-row">
+            <input type="text" id="input-speech-text" class="sound-input" placeholder="Type words to speak..." value="Hello! I am Roomba." maxlength="100">
+            <select id="select-speech-target" class="sound-select" style="max-width: 140px;">
+              <option value="both">Both (Synced)</option>
+              <option value="browser">Human Voice</option>
+              <option value="roomba">Robot Speaker</option>
+            </select>
+            <button id="btn-speak-voice" class="btn btn-secondary">🎙️ Speak</button>
+          </div>
+        </div>
+
+        <!-- RTTTL Custom Ringtone Player -->
+        <div class="sound-group">
+          <label class="sound-label" for="input-rtttl">RTTTL Ringtone String:</label>
+          <div class="sound-input-row">
+            <input type="text" id="input-rtttl" class="sound-input" placeholder="name:d=4,o=5,b=120:..." value="mario:d=4,o=5,b=100:16e6,16e6,32p,8e6,16c6,8e6,8g6,8p,8g">
+            <button id="btn-play-rtttl" class="btn btn-secondary">🎵 Play</button>
+          </div>
+        </div>
+
+        <!-- Tone / Pitch Slider -->
+        <div class="sound-group">
+          <div class="sound-slider-header">
+            <span>Tone Pitch: <strong id="val-beep-note">72</strong> (C5)</span>
+            <span>Duration: <strong id="val-beep-dur">16</strong> (~0.25s)</span>
+          </div>
+          <div class="sound-sliders-row">
+            <input type="range" id="slider-beep-note" min="31" max="100" value="72" class="range-slider">
+            <input type="range" id="slider-beep-dur" min="4" max="64" value="16" class="range-slider">
+            <button id="btn-play-tone" class="btn btn-secondary">🔊 Play Tone</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Bottom Full-Width Row: Event Console & Diagnostics -->
+    <section class="card card-console">
+      <div class="card-header">
+        <h2>TELEMETRY EVENT CONSOLE</h2>
+        <button id="btn-clear-log" class="btn btn-secondary btn-sm">Clear</button>
+      </div>
+      <div id="console-output" class="console-output">
+        <div class="log-line log-info">[SYSTEM] Cockpit UI loaded. Connect to Roomba to start streaming.</div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

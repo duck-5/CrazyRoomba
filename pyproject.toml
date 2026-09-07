@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roomba-controller"
+version = "1.0.0"
+description = "Cross-platform autonomous controller and web cockpit for iRobot Roomba 960 (Raspberry Pi & Windows)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "Yuval Mantin" }
+]
+dependencies = [
+    "pyserial>=3.5",
+    "pyserial-asyncio>=0.6",
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.20.0",
+    "websockets>=11.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.24.0",
+]
+vision = [
+    "opencv-python>=4.8.0",
+    "numpy>=1.24.0",
+]
+
+[project.scripts]
+roomba-server = "scripts.run_server:main"
+roomba-teleop = "scripts.teleop_cli:main"
+roomba-verify = "scripts.verify:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["roomba*"]
