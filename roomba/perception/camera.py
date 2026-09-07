@@ -58,3 +58,53 @@ class MockCameraSource(BaseCameraSource):
     async def close(self) -> None:
         self.is_open = False
         logger.info("MockCameraSource closed.")
+
+
+class OpenCVCameraSource(BaseCameraSource):
+    """Camera source using OpenCV to capture from USB or Pi camera."""
+
+    def __init__(self, device_index: int = 0, width: int = 640, height: int = 480):
+        super().__init__(device_index)
+        self.width = width
+        self.height = height
+        self.cap = None
+        self._cv2 = None
+
+    async def open(self) -> bool:
+        if self.is_open:
+            return True
+        try:
+            import cv2
+            self._cv2 = cv2
+            # Use V4L2 backend on Linux, DirectShow on Windows, default elsewhere
+            self.cap = cv2.VideoCapture(self.device_index)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+            if not self.cap.isOpened():
+                logger.error(f"Failed to open OpenCV camera at index {self.device_index}")
+                return False
+            self.is_open = True
+            logger.info(f"OpenCVCameraSource opened (index={self.device_index})")
+            return True
+        except ImportError:
+            logger.error("cv2 module not found. Please install opencv-python.")
+            return False
+
+    async def read_frame(self) -> Optional[Any]:
+        if not self.is_open or self.cap is None or self._cv2 is None:
+            return None
+        
+        # Run synchronous cv2 read in a thread pool to avoid blocking the asyncio event loop
+        loop = asyncio.get_running_loop()
+        ret, frame = await loop.run_in_executor(None, self.cap.read)
+        if not ret:
+            logger.warning("Failed to grab frame from OpenCV camera.")
+            return None
+        return frame
+
+    async def close(self) -> None:
+        self.is_open = False
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        logger.info("OpenCVCameraSource closed.")

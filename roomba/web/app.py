@@ -19,6 +19,12 @@ from roomba.core.controller import RobotController
 from roomba.driver.discovery import list_serial_ports
 from roomba.config import config, STATIC_DIR
 
+try:
+    import multipart
+    _HAS_MULTIPART = True
+except ImportError:
+    _HAS_MULTIPART = False
+
 logger = logging.getLogger("roomba.web.app")
 
 controller = RobotController()
@@ -116,6 +122,11 @@ def create_app() -> FastAPI:
             "event_log": controller.event_log[-20:],
         }
 
+    @application.get("/api/map")
+    async def api_map():
+        """Returns the current 2D occupancy grid map."""
+        return controller.grid_map.get_map_data()
+
     @application.post("/api/connect")
     async def api_connect(req: ConnectRequest):
         try:
@@ -202,6 +213,13 @@ def create_app() -> FastAPI:
         controller.set_perception_target(req.target)
         return {"status": "ok"}
 
+    @application.get("/api/perception/status")
+    async def api_perception_status():
+        """Check if vision-dependent modes are active (Resource Management for Pi 5)."""
+        active_mode = controller.mode_manager.active_name
+        is_active = active_mode in ["follow_person", "map_mode"]
+        return {"vision_active": is_active, "mode": active_mode}
+
     # --- Drive Endpoints ---
 
     @application.post("/api/drive")
@@ -264,34 +282,48 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-    @application.post("/api/sound/grind_audio")
-    async def api_sound_grind_audio(
-        file: Optional[UploadFile] = File(None),
-        req: Optional[ActionRequest] = None,
-    ):
-        """
-        Grind an uploaded WAV file or base64 audio payload into Roomba Open Interface signals
-        and stream directly to the Roomba speaker.
-        """
-        try:
-            wav_bytes = None
-            mode = "formant_interleave"
-            if file is not None:
-                wav_bytes = await file.read()
-            elif req is not None and req.audio_base64:
+    if _HAS_MULTIPART:
+        @application.post("/api/sound/grind_audio")
+        async def api_sound_grind_audio(
+            file: Optional[UploadFile] = File(None),
+            req: Optional[ActionRequest] = None,
+        ):
+            """
+            Grind an uploaded WAV file or base64 audio payload into Roomba Open Interface signals
+            and stream directly to the Roomba speaker.
+            """
+            try:
+                wav_bytes = None
+                mode = "formant_interleave"
+                if file is not None:
+                    wav_bytes = await file.read()
+                elif req is not None and req.audio_base64:
+                    import base64
+                    wav_bytes = base64.b64decode(req.audio_base64)
+                    if req.mode:
+                        mode = req.mode
+
+                if not wav_bytes:
+                    raise HTTPException(status_code=400, detail="No audio file or base64 data provided.")
+
+                return await controller.execute_action("grind_audio", wav_bytes=wav_bytes, mode=mode)
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+    else:
+        @application.post("/api/sound/grind_audio")
+        async def api_sound_grind_audio_fallback(req: Optional[ActionRequest] = None):
+            """Fallback when python-multipart is not installed."""
+            if req is not None and req.audio_base64:
                 import base64
                 wav_bytes = base64.b64decode(req.audio_base64)
-                if req.mode:
-                    mode = req.mode
-
-            if not wav_bytes:
-                raise HTTPException(status_code=400, detail="No audio file or base64 data provided.")
-
-            return await controller.execute_action("grind_audio", wav_bytes=wav_bytes, mode=mode)
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
+                mode = req.mode or "formant_interleave"
+                return await controller.execute_action("grind_audio", wav_bytes=wav_bytes, mode=mode)
+            raise HTTPException(
+                status_code=501,
+                detail="File uploads require python-multipart. Install with: pip install python-multipart",
+            )
 
 
     @application.post("/api/odometry/reset")

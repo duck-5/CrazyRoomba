@@ -52,10 +52,26 @@ class FollowPersonMode(BaseMode):
         """
         now = time.monotonic()
 
-        # Emergency obstacle protection: if robot bumpers or cliffs fire, halt
+        # Emergency obstacle protection: if robot physical bumpers or cliffs fire, halt
         if context.is_bumped or context.is_cliff_detected:
             context.controller.log_event("warn", "FollowPerson: Safety sensor triggered, stopping")
             return DriveCommand.stop()
+
+        # Proactive obstacle avoidance using Light Bumpers (IR proximity)
+        lb = context.telemetry.get("light_bumpers", {})
+        front_blocked = lb.get("center_left") or lb.get("center_right")
+        left_blocked = lb.get("front_left") or lb.get("left")
+        right_blocked = lb.get("front_right") or lb.get("right")
+
+        if front_blocked or left_blocked or right_blocked:
+            # Prioritize not crashing. Steer away from the obstacle.
+            if front_blocked:
+                # Stop forward momentum, maybe spin away
+                return DriveCommand(left=-50, right=-50) # Back up slightly
+            elif left_blocked:
+                return DriveCommand.spin_right(100)
+            elif right_blocked:
+                return DriveCommand.spin_left(100)
 
         target = context.perception.get("target_person")
 

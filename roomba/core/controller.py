@@ -30,6 +30,7 @@ from roomba.modes.manager import ModeManager
 from roomba.modes.manual import ManualMode
 from roomba.modes.wander import WanderMode
 from roomba.modes.follow_person import FollowPersonMode
+from roomba.perception.mapping import OccupancyGrid
 from roomba.config import config
 
 logger = logging.getLogger("roomba.core.controller")
@@ -65,6 +66,9 @@ class RobotController:
         self.latest_telemetry: Dict[str, Any] = self._empty_telemetry()
         self.latest_perception: Dict[str, Any] = {}
         self.event_log: list[Dict[str, Any]] = []
+        
+        # 2D Mapping (Walls, Voids, Free Space)
+        self.grid_map = OccupancyGrid(cell_size_mm=50, width_cells=200, height_cells=200)
 
     def _init_modes(self) -> None:
         """Register autonomous operating mode scripts."""
@@ -522,11 +526,31 @@ class RobotController:
     async def _telemetry_loop(self) -> None:
         interval = config.telemetry_interval
         logger.info(f"Telemetry streaming loop started at {config.telemetry_rate_hz} Hz")
+        import math
         while self.is_connected and self.client:
             try:
                 t = await self.client.get_telemetry()
                 self._enrich_telemetry(t)
                 self.latest_telemetry = t
+                
+                # Update Occupancy Grid if mapping is enabled or we want passive mapping
+                if self.mode_manager.active_name == "map_mode" or True: # Passive mapping
+                    x = t["encoders"].get("distance_mm", 0) * math.cos(math.radians(t["encoders"].get("angle_deg", 0)))
+                    y = t["encoders"].get("distance_mm", 0) * math.sin(math.radians(t["encoders"].get("angle_deg", 0)))
+                    theta = math.radians(t["encoders"].get("angle_deg", 0))
+                    
+                    self.grid_map.update_pose(x, y, theta)
+                    
+                    # Mark physical bumper hits as walls
+                    if t["bumps_and_drops"].get("bump_left"):
+                        self.grid_map.mark_obstacle(180, 0.5) # approx location
+                    if t["bumps_and_drops"].get("bump_right"):
+                        self.grid_map.mark_obstacle(180, -0.5)
+                        
+                    # Mark cliff sensors as voids
+                    if any(t["cliffs"].values()):
+                        self.grid_map.mark_cliff(150, 0.0)
+
                 await self._broadcast_telemetry(t)
             except asyncio.CancelledError:
                 break
