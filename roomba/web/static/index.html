@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#090c10" />
   <title>Roomba 960 Cockpit & Sensor Telemetry</title>
   <link rel="stylesheet" href="/static/style.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -29,7 +33,8 @@
         <span id="conn-status-text">DISCONNECTED</span>
         <span id="ping-badge" class="badge">-- ms</span>
       </div>
-      <div class="port-select-box">
+      <button id="btn-toggle-port-settings" class="btn btn-secondary btn-icon mobile-settings-toggle" title="Connection Settings">⚙️ Ports</button>
+      <div id="port-select-box" class="port-select-box">
         <select id="port-select" title="Select Serial Port">
           <option value="">Detecting ports...</option>
         </select>
@@ -52,11 +57,31 @@
     </div>
   </header>
 
+  <!-- Mobile Cockpit Tab Navigation Bar -->
+  <nav class="mobile-tab-bar" id="mobile-tab-bar" aria-label="Cockpit Tabs">
+    <button class="mobile-tab-btn active" data-tab="drive">
+      <span class="mobile-tab-icon">🕹️</span>
+      <span class="mobile-tab-title">Drive</span>
+    </button>
+    <button class="mobile-tab-btn" data-tab="schematic">
+      <span class="mobile-tab-icon">🤖</span>
+      <span class="mobile-tab-title">Sensors</span>
+    </button>
+    <button class="mobile-tab-btn" data-tab="power">
+      <span class="mobile-tab-icon">⚡</span>
+      <span class="mobile-tab-title">Power</span>
+    </button>
+    <button class="mobile-tab-btn" data-tab="console">
+      <span class="mobile-tab-icon">📋</span>
+      <span class="mobile-tab-title">Console</span>
+    </button>
+  </nav>
+
   <!-- Main Grid Dashboard -->
   <main class="dashboard-grid">
 
     <!-- Column 1: Robot Schematic & Safety Interlocks -->
-    <section class="card card-robot">
+    <section class="card card-robot" data-tab-pane="schematic">
       <div class="card-header">
         <h2>ROBOT SCHEMATIC & SENSORS</h2>
         <span id="oi-mode-badge" class="badge badge-mode">OFF</span>
@@ -131,10 +156,27 @@
     </section>
 
     <!-- Column 2: Teleoperation & Movement -->
-    <section class="card card-teleop">
+    <section class="card card-teleop" data-tab-pane="drive">
       <div class="card-header">
         <h2>TELEOPERATION & DRIVE</h2>
         <span id="drive-state-badge" class="badge">STOPPED</span>
+      </div>
+
+      <!-- Mobile Quick Status HUD -->
+      <div class="mobile-quick-status" id="mobile-quick-status">
+        <div class="quick-stat-chip">
+          <span class="quick-stat-label">BATTERY</span>
+          <span id="quick-battery-text" class="quick-stat-val">-- %</span>
+        </div>
+        <div class="quick-stat-chip">
+          <span class="quick-stat-label">OI MODE</span>
+          <span id="quick-mode-text" class="quick-stat-val">OFF</span>
+        </div>
+        <div class="quick-stat-chip">
+          <span class="quick-stat-label">SAFETY</span>
+          <span id="quick-arm-badge" class="badge badge-disarmed">DISARMED</span>
+        </div>
+        <button id="btn-quick-arm" class="btn btn-arm btn-quick-arm" type="button">ARM ROBOT</button>
       </div>
 
       <!-- Speed Control Slider -->
@@ -152,32 +194,66 @@
         </div>
       </div>
 
-      <!-- D-Pad Controls -->
-      <div class="dpad-container">
-        <div class="dpad-row">
-          <button id="btn-forward" class="dpad-btn btn-fwd" title="Drive Forward (W / ↑)">
-            <span class="dpad-icon">▲</span>
-            <span class="dpad-key">W</span>
-          </button>
+      <!-- Controller Mode Switcher (Smooth Joystick vs Large D-Pad) -->
+      <div class="controller-mode-switcher">
+        <button type="button" id="tab-ctrl-joystick" class="btn-ctrl-mode active">🕹️ Smooth Joystick</button>
+        <button type="button" id="tab-ctrl-dpad" class="btn-ctrl-mode">🎛️ Touch D-Pad</button>
+      </div>
+
+      <!-- Large Virtual Analog Joystick View -->
+      <div id="joystick-view" class="joystick-view">
+        <div class="joystick-container">
+          <div id="joystick-base" class="joystick-base" title="Touch & drag to steer smoothly (Proportional 360°)">
+            <div class="joystick-ring ring-outer"></div>
+            <div class="joystick-ring ring-mid"></div>
+            <div class="joystick-ring ring-inner"></div>
+            <div class="joystick-crosshair crosshair-x"></div>
+            <div class="joystick-crosshair crosshair-y"></div>
+            <span class="joystick-dir-label dir-n">▲ FWD</span>
+            <span class="joystick-dir-label dir-s">▼ REV</span>
+            <span class="joystick-dir-label dir-w">◀ L</span>
+            <span class="joystick-dir-label dir-e">R ▶</span>
+            <div id="joystick-knob" class="joystick-knob">
+              <div class="knob-center-glow"></div>
+            </div>
+          </div>
         </div>
-        <div class="dpad-row">
-          <button id="btn-left" class="dpad-btn btn-turn" title="Spin Left (A / ←)">
-            <span class="dpad-icon">↺</span>
-            <span class="dpad-key">A</span>
-          </button>
-          <button id="btn-stop" class="dpad-btn btn-center-stop" title="Immediate Stop (Space)">
-            <span class="dpad-icon">■</span>
-          </button>
-          <button id="btn-right" class="dpad-btn btn-turn" title="Spin Right (D / →)">
-            <span class="dpad-icon">↻</span>
-            <span class="dpad-key">D</span>
-          </button>
+        <!-- Live telemetry readout under joystick -->
+        <div class="joystick-status-bar">
+          <span id="joystick-readout" class="joystick-readout">CENTERED • STOPPED</span>
+          <span id="joystick-speed-readout" class="joystick-speed-readout">L: 0 | R: 0 mm/s</span>
         </div>
-        <div class="dpad-row">
-          <button id="btn-backward" class="dpad-btn btn-rev" title="Drive Backward (S / ↓)">
-            <span class="dpad-icon">▼</span>
-            <span class="dpad-key">S</span>
-          </button>
+      </div>
+
+      <!-- D-Pad Controls View -->
+      <div id="dpad-view" class="dpad-view" style="display: none;">
+        <div class="dpad-container large-touch-dpad">
+          <div class="dpad-row">
+            <button id="btn-forward" class="dpad-btn btn-fwd" title="Drive Forward (W / ↑)">
+              <span class="dpad-icon">▲</span>
+              <span class="dpad-key">FWD (W)</span>
+            </button>
+          </div>
+          <div class="dpad-row">
+            <button id="btn-left" class="dpad-btn btn-turn" title="Spin Left (A / ←)">
+              <span class="dpad-icon">↺</span>
+              <span class="dpad-key">LEFT (A)</span>
+            </button>
+            <button id="btn-stop" class="dpad-btn btn-center-stop" title="Immediate Stop (Space)">
+              <span class="dpad-icon">■</span>
+              <span class="dpad-key">STOP</span>
+            </button>
+            <button id="btn-right" class="dpad-btn btn-turn" title="Spin Right (D / →)">
+              <span class="dpad-icon">↻</span>
+              <span class="dpad-key">RIGHT (D)</span>
+            </button>
+          </div>
+          <div class="dpad-row">
+            <button id="btn-backward" class="dpad-btn btn-rev" title="Drive Backward (S / ↓)">
+              <span class="dpad-icon">▼</span>
+              <span class="dpad-key">REV (S)</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -210,7 +286,7 @@
     </section>
 
     <!-- Column 3: Battery Telemetry & Mode Management -->
-    <section class="card card-power">
+    <section class="card card-power" data-tab-pane="power">
       <div class="card-header">
         <h2>BATTERY & POWER TELEMETRY</h2>
         <span id="chg-state-badge" class="badge">Not Charging</span>
@@ -318,35 +394,61 @@
         </div>
       </div>
 
-      <!-- Sound & Audio Transmitter -->
+      <!-- 8-Bit Chiptune Jukebox & Sound Marks -->
       <div class="sound-transmitter-card">
         <div class="section-title-row">
-          <h3>SPEAKER & AUDIO TRANSMITTER</h3>
+          <h3>8-BIT CHIPTUNE JUKEBOX & SOUND MARKS</h3>
           <span class="badge badge-info">OI OPCODES 140/141</span>
         </div>
 
-        <!-- Preset Melodies -->
+        <!-- 8-Bit Retro Chiptune Songs -->
         <div class="sound-group">
-          <label class="sound-label" for="select-preset-tune">Preset Melody:</label>
+          <label class="sound-label" for="select-preset-tune">🕹️ 8-Bit Chiptune Song:</label>
           <div class="sound-input-row">
             <select id="select-preset-tune" class="sound-select">
-              <option value="mario">🍄 Super Mario Bros</option>
-              <option value="imperial">⚔️ Star Wars Imperial March</option>
-              <option value="charge">🎺 Stadium Fanfare (Charge)</option>
-              <option value="zelda">🗡️ Zelda Secret Chime</option>
-              <option value="alert">🚨 Warning Alert Siren</option>
-              <option value="happy">✨ Cheerful Arpeggio</option>
-              <option value="sad">🌧️ Minor Chime</option>
-              <option value="nokia">📱 Nokia Classic Ringtone</option>
-              <option value="r2d2">🤖 R2-D2 Chirp</option>
+              <option value="tetris">🕹️ Tetris (Korobeiniki - Full Theme)</option>
+              <option value="mario_kart_start">🏎️ Mario Kart (3-2-1-GO! Countdown)</option>
+              <option value="mario_kart_circuit">🏎️ Mario Kart (Circuit Theme)</option>
+              <option value="mario_overworld">🍄 Super Mario Bros (Overworld)</option>
+              <option value="mario_starman">⭐ Super Mario (Invincible Starman)</option>
+              <option value="mario_underground">🧱 Super Mario (Underground Theme)</option>
+              <option value="pacman">🟡 Pac-Man (Arcade Intro Theme)</option>
+              <option value="zelda_theme">🗡️ Legend of Zelda (Overworld Theme)</option>
+              <option value="zelda_secret">🗝️ Legend of Zelda (Secret Chime)</option>
+              <option value="doom_e1m1">💀 Doom E1M1 (At Doom's Gate)</option>
+              <option value="pokemon_title">⚡ Pokemon (Game Boy Title Fanfare)</option>
+              <option value="imperial_march">⚔️ Star Wars (Imperial March)</option>
+              <option value="cantina_band">🎷 Star Wars (Cantina Band)</option>
+              <option value="coffin_dance">⚰️ Coffin Dance (Astronomia)</option>
+              <option value="rickroll">🕺 Rickroll (Never Gonna Give You Up)</option>
+              <option value="megaman">🤖 Mega Man 2 (Dr. Wily Stage 1)</option>
             </select>
-            <button id="btn-play-tune" class="btn btn-secondary">▶ Play Melody</button>
+            <button id="btn-play-tune" class="btn btn-secondary">▶ Play Song</button>
           </div>
         </div>
 
-        <!-- Morse Code Audio Transmitter -->
+        <!-- Functional Sound Marks (Robot Audio Cues) -->
         <div class="sound-group">
-          <label class="sound-label" for="input-morse-text">Morse Code Audio Transmitter:</label>
+          <label class="sound-label">🔔 Robot Sound Marks (Functional Audio Cues):</label>
+          <div class="soundboard-grid" id="soundmarks-container">
+            <button class="btn-sound-chip" data-mark="startup">🚀 Startup</button>
+            <button class="btn-sound-chip" data-mark="dock_success">🔌 Dock Success</button>
+            <button class="btn-sound-chip" data-mark="clean_done">🏁 Clean Done</button>
+            <button class="btn-sound-chip" data-mark="ack">✅ ACK (Confirm)</button>
+            <button class="btn-sound-chip" data-mark="obstacle_alert">⚠️ Obstacle Alert</button>
+            <button class="btn-sound-chip" data-mark="cliff_warning">🛑 Cliff Warning</button>
+            <button class="btn-sound-chip" data-mark="low_battery">🪫 Low Battery</button>
+            <button class="btn-sound-chip" data-mark="nack">❌ NACK (Reject)</button>
+            <button class="btn-sound-chip" data-mark="reverse_beep">🚚 Reverse Beep</button>
+            <button class="btn-sound-chip" data-mark="shutdown">💤 Power Down</button>
+            <button class="btn-sound-chip" data-mark="happy">✨ Happy</button>
+            <button class="btn-sound-chip" data-mark="sad">🌧️ Sad</button>
+          </div>
+        </div>
+
+        <!-- Morse Code Audio Transmitter & SOS -->
+        <div class="sound-group">
+          <label class="sound-label" for="input-morse-text">Morse Code Transmitter:</label>
           <div class="sound-input-row">
             <input type="text" id="input-morse-text" class="sound-input" placeholder="Type text to transmit (e.g. SOS)" value="SOS" maxlength="40">
             <button id="btn-transmit-morse" class="btn btn-secondary">📡 Transmit</button>
@@ -354,79 +456,11 @@
           </div>
         </div>
 
-        <!-- Human Speech & Voice Signal Grinder -->
-        <div class="sound-group">
-          <label class="sound-label" for="input-speech-text">Human Speech & Voice Signal Grinder:</label>
-          <div class="sound-input-row">
-            <input type="text" id="input-speech-text" class="sound-input" placeholder="Type phrase (e.g. Hello, I am Roomba)..." value="Hello, I am Roomba." maxlength="100">
-            <select id="select-speech-mode" class="sound-select" style="max-width: 170px;" title="Signal Grinder Algorithm">
-              <option value="formant_interleave">Formant TDM (Vowels)</option>
-              <option value="dominant_peak">Dominant Peak</option>
-              <option value="pitch_f0">Pitch F0 Contour</option>
-            </select>
-            <select id="select-speech-target" class="sound-select" style="max-width: 140px;">
-              <option value="roomba">Robot Speaker</option>
-              <option value="both">Both (Synced)</option>
-              <option value="browser">Human Voice</option>
-            </select>
-            <button id="btn-speak-voice" class="btn btn-secondary">🎙️ Speak</button>
-          </div>
-        </div>
-
-        <!-- Live Microphone Voice Grinder -->
-        <div class="sound-group">
-          <label class="sound-label">Live Microphone Voice Grinder (Browser Mic → Roomba Speaker):</label>
-          <div class="sound-input-row">
-            <button id="btn-record-mic" class="btn btn-secondary" style="flex: 1;">
-              <span id="mic-icon">🎤</span> <span id="mic-label">Record Voice & Grind to Roomba</span>
-            </button>
-            <span id="mic-status-badge" class="badge badge-mode">IDLE</span>
-          </div>
-        </div>
-
-        <!-- Audio File Grinder (.wav) -->
-        <div class="sound-group">
-          <label class="sound-label" for="input-audio-file">Grind Custom Audio File (.wav):</label>
-          <div class="sound-input-row">
-            <input type="file" id="input-audio-file" accept=".wav,audio/wav" class="sound-input" style="padding: 4px 8px;">
-            <button id="btn-grind-file" class="btn btn-secondary">⚙️ Grind & Play</button>
-          </div>
-        </div>
-
-        <!-- Human Vocal Soundboard -->
-        <div class="sound-group">
-          <label class="sound-label">Interactive Human Soundboard (Onboard Roomba 1W Speaker):</label>
-          <div class="soundboard-grid" id="soundboard-container">
-            <!-- Words -->
-            <button class="btn-sound-chip" data-sound="hello">🗣️ "Hello!"</button>
-            <button class="btn-sound-chip" data-sound="roomba">🤖 "Roomba"</button>
-            <button class="btn-sound-chip" data-sound="yes">✅ "Yes!"</button>
-            <button class="btn-sound-chip" data-sound="no">❌ "No-No!"</button>
-            <button class="btn-sound-chip" data-sound="help">🆘 "Help!"</button>
-            <button class="btn-sound-chip" data-sound="danger">🚨 "Danger!"</button>
-            <button class="btn-sound-chip" data-sound="stop">✋ "Stop!"</button>
-            <button class="btn-sound-chip" data-sound="thank_you">🙏 "Thank You"</button>
-            <button class="btn-sound-chip" data-sound="goodbye">👋 "Goodbye!"</button>
-            <!-- Vocal Gestures -->
-            <button class="btn-sound-chip" data-sound="laugh">😂 Laugh</button>
-            <button class="btn-sound-chip" data-sound="scream">😱 Scream</button>
-            <button class="btn-sound-chip" data-sound="sigh">💨 Sigh</button>
-            <button class="btn-sound-chip" data-sound="cough">😷 Cough</button>
-            <button class="btn-sound-chip" data-sound="gasp">😲 Gasp</button>
-            <button class="btn-sound-chip" data-sound="sneeze">🤧 Sneeze</button>
-            <button class="btn-sound-chip" data-sound="whistle">🎶 Whistle</button>
-            <button class="btn-sound-chip" data-sound="yawn">🥱 Yawn</button>
-            <button class="btn-sound-chip" data-sound="giggle">🤭 Giggle</button>
-            <button class="btn-sound-chip" data-sound="groan">😫 Groan</button>
-            <button class="btn-sound-chip" data-sound="uh_oh">⚠️ "Uh-Oh!"</button>
-          </div>
-        </div>
-
         <!-- RTTTL Custom Ringtone Player -->
         <div class="sound-group">
           <label class="sound-label" for="input-rtttl">RTTTL Ringtone String:</label>
           <div class="sound-input-row">
-            <input type="text" id="input-rtttl" class="sound-input" placeholder="name:d=4,o=5,b=120:..." value="mario:d=4,o=5,b=100:16e6,16e6,32p,8e6,16c6,8e6,8g6,8p,8g">
+            <input type="text" id="input-rtttl" class="sound-input" placeholder="name:d=4,o=5,b=120:..." value="tetris:d=4,o=5,b=160:e6,8b,8c6,8d6,16e6,16d6,8c6,8b,a,8a,8c6,e6,8d6,8c6,b,8b,8c6,d6,e6,c6,a,2a">
             <button id="btn-play-rtttl" class="btn btn-secondary">🎵 Play</button>
           </div>
         </div>
@@ -445,10 +479,11 @@
         </div>
       </div>
 
+
     </section>
 
     <!-- Bottom Full-Width Row: Event Console & Diagnostics -->
-    <section class="card card-console">
+    <section class="card card-console" data-tab-pane="console">
       <div class="card-header">
         <h2>TELEMETRY EVENT CONSOLE</h2>
         <button id="btn-clear-log" class="btn btn-secondary btn-sm">Clear</button>

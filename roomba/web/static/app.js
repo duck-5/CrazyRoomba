@@ -22,8 +22,21 @@ class RoombaCockpit {
     this.isDriving = false;
     this.driveHeartbeat = null;
 
+    // Mobile & Controller Mode State
+    this.controllerMode = localStorage.getItem("roomba_ctrl_mode") || "joystick";
+    this.activeMobileTab = "drive";
+    this.isJoystickDragging = false;
+    this.joystickPointerId = null;
+    this.joystickCenter = { x: 0, y: 0 };
+    this.joystickRadius = 65;
+    this.joystickLoop = null;
+    this.joystickVector = { x: 0, y: 0, speedLeft: 0, speedRight: 0 };
+
     // UI Elements
     this.initElements();
+    this.initJoystick();
+    this.setControllerMode(this.controllerMode);
+    this.handleResize();
     this.bindEvents();
     this.scanPorts();
     this.connectWebSocket();
@@ -35,11 +48,23 @@ class RoombaCockpit {
     this.connStatusText = document.getElementById("conn-status-text");
     this.pingBadge = document.getElementById("ping-badge");
     this.portSelect = document.getElementById("port-select");
+    this.portSelectBox = document.getElementById("port-select-box");
+    this.btnTogglePortSettings = document.getElementById("btn-toggle-port-settings");
     this.btnRefreshPorts = document.getElementById("btn-refresh-ports");
     this.btnConnect = document.getElementById("btn-connect");
     this.btnDisconnect = document.getElementById("btn-disconnect");
     this.mockCheckbox = document.getElementById("mock-checkbox");
     this.btnEstop = document.getElementById("btn-estop");
+
+    // Mobile Navigation & Quick Status
+    this.mobileTabBar = document.getElementById("mobile-tab-bar");
+    this.mobileTabButtons = document.querySelectorAll(".mobile-tab-btn");
+    this.cardPanes = document.querySelectorAll(".card[data-tab-pane]");
+    this.mobileQuickStatus = document.getElementById("mobile-quick-status");
+    this.quickBatteryText = document.getElementById("quick-battery-text");
+    this.quickModeText = document.getElementById("quick-mode-text");
+    this.quickArmBadge = document.getElementById("quick-arm-badge");
+    this.btnQuickArm = document.getElementById("btn-quick-arm");
 
     // Robot SVG Elements
     this.oiModeBadge = document.getElementById("oi-mode-badge");
@@ -75,6 +100,14 @@ class RoombaCockpit {
     this.speedSlider = document.getElementById("speed-slider");
     this.speedValue = document.getElementById("speed-value");
     this.presetButtons = document.querySelectorAll(".btn-preset");
+    this.tabCtrlJoystick = document.getElementById("tab-ctrl-joystick");
+    this.tabCtrlDpad = document.getElementById("tab-ctrl-dpad");
+    this.joystickView = document.getElementById("joystick-view");
+    this.dpadView = document.getElementById("dpad-view");
+    this.joystickBase = document.getElementById("joystick-base");
+    this.joystickKnob = document.getElementById("joystick-knob");
+    this.joystickReadout = document.getElementById("joystick-readout");
+    this.joystickSpeedReadout = document.getElementById("joystick-speed-readout");
     this.btnFwd = document.getElementById("btn-forward");
     this.btnRev = document.getElementById("btn-backward");
     this.btnLeft = document.getElementById("btn-left");
@@ -133,22 +166,7 @@ class RoombaCockpit {
     this.valBeepDur = document.getElementById("val-beep-dur");
     this.btnPlayTone = document.getElementById("btn-play-tone");
     this.btnQuickSos = document.getElementById("btn-quick-sos");
-    this.inputSpeechText = document.getElementById("input-speech-text");
-    this.selectSpeechMode = document.getElementById("select-speech-mode");
-    this.selectSpeechTarget = document.getElementById("select-speech-target");
-    this.btnSpeakVoice = document.getElementById("btn-speak-voice");
-    this.btnRecordMic = document.getElementById("btn-record-mic");
-    this.micIcon = document.getElementById("mic-icon");
-    this.micLabel = document.getElementById("mic-label");
-    this.micStatusBadge = document.getElementById("mic-status-badge");
-    this.inputAudioFile = document.getElementById("input-audio-file");
-    this.btnGrindFile = document.getElementById("btn-grind-file");
-    this.soundboardContainer = document.getElementById("soundboard-container");
-
-    // Microphone state
-    this.isRecordingMic = false;
-    this.micMediaRecorder = null;
-    this.micAudioChunks = [];
+    this.soundmarksContainer = document.getElementById("soundmarks-container");
 
     // Console
     this.consoleOutput = document.getElementById("console-output");
@@ -164,107 +182,6 @@ class RoombaCockpit {
     this.consoleOutput.scrollTop = this.consoleOutput.scrollHeight;
   }
 
-  speakHumanVoice(text) {
-    if (!("speechSynthesis" in window)) {
-      this.log("Speech Synthesis not supported in this browser.", "warn");
-      return;
-    }
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    const voices = window.speechSynthesis.getVoices();
-    const engVoice = voices.find((v) => v.lang.startsWith("en"));
-    if (engVoice) utterance.voice = engVoice;
-    window.speechSynthesis.speak(utterance);
-    this.log(`Spoke human voice: "${text}"`, "info");
-  }
-
-  async uploadAndGrindAudioBlob(blob) {
-    try {
-      this.log("Processing and converting voice recording to standard WAV...", "info");
-      const wavBlob = await this.blobToWav(blob);
-      const formData = new FormData();
-      formData.append("file", wavBlob, "voice_recording.wav");
-      this.log("Grinding audio signal into 64Hz Roomba formant notes...", "info");
-      const res = await fetch("/api/sound/grind_audio", {
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "Audio grinding failed");
-      }
-      const data = await res.json();
-      this.log(`Voice ground into ${data.notes_count} Roomba notes (${data.duration_s ? data.duration_s.toFixed(2) + "s" : ""}) and streaming to robot speaker!`, "success");
-      if (this.micStatusBadge) {
-        this.micStatusBadge.textContent = "IDLE";
-        this.micStatusBadge.className = "badge badge-mode";
-      }
-    } catch (err) {
-      this.log(`Audio Grinder error: ${err.message}`, "error");
-      if (this.micStatusBadge) {
-        this.micStatusBadge.textContent = "ERROR";
-        this.micStatusBadge.className = "badge badge-danger";
-      }
-    }
-  }
-
-  async blobToWav(blob) {
-    try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const arrayBuffer = await blob.arrayBuffer();
-      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-
-      const targetSampleRate = 16000;
-      const offlineCtx = new OfflineAudioContext(
-        1,
-        Math.max(16, Math.ceil(audioBuffer.duration * targetSampleRate)),
-        targetSampleRate
-      );
-      const source = offlineCtx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(offlineCtx.destination);
-      source.start(0);
-      const rendered = await offlineCtx.startRendering();
-
-      const channelData = rendered.getChannelData(0);
-      const wavBuffer = this.pcmToWav(channelData, targetSampleRate);
-      return new Blob([wavBuffer], { type: "audio/wav" });
-    } catch (e) {
-      console.warn("Web Audio decode fallback to raw blob:", e);
-      return blob;
-    }
-  }
-
-  pcmToWav(samples, sampleRate) {
-    const buffer = new ArrayBuffer(44 + samples.length * 2);
-    const view = new DataView(buffer);
-    const writeString = (offset, string) => {
-      for (let i = 0; i < string.length; i++) {
-        view.setUint8(offset + i, string.charCodeAt(i));
-      }
-    };
-    writeString(0, "RIFF");
-    view.setUint32(4, 36 + samples.length * 2, true);
-    writeString(8, "WAVE");
-    writeString(12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true); // PCM
-    view.setUint16(22, 1, true); // Mono
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, "data");
-    view.setUint32(40, samples.length * 2, true);
-    let offset = 44;
-    for (let i = 0; i < samples.length; i++, offset += 2) {
-      let s = Math.max(-1, Math.min(1, samples[i]));
-      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    }
-    return buffer;
-  }
 
 
   connectWebSocket() {
@@ -471,6 +388,23 @@ class RoombaCockpit {
     this.statAngle.textContent = `${enc.angle_deg || 0}°`;
     if (this.statHeading) {
       this.statHeading.textContent = `Heading: ${enc.heading_deg !== undefined ? enc.heading_deg : 0}°`;
+    }
+
+    // 7. Mobile Quick Status HUD
+    if (this.quickBatteryText) this.quickBatteryText.textContent = `${pct}%`;
+    if (this.quickModeText) this.quickModeText.textContent = this.currentMode.toUpperCase();
+    if (this.quickArmBadge) {
+      this.quickArmBadge.className = this.armed ? "badge badge-armed" : "badge badge-disarmed";
+      this.quickArmBadge.textContent = this.armed ? "ARMED" : "DISARMED";
+    }
+    if (this.btnQuickArm) {
+      this.btnQuickArm.textContent = this.armed ? "DISARM ROBOT" : "ARM ROBOT";
+      this.btnQuickArm.className = this.armed ? "btn btn-arm is-armed btn-quick-arm" : "btn btn-arm btn-quick-arm";
+    }
+    const quickDrive = document.getElementById("quick-drive-text");
+    if (quickDrive) {
+      quickDrive.textContent = this.isDriving ? "DRIVING" : "STOPPED";
+      quickDrive.style.color = this.isDriving ? "var(--accent-green)" : "var(--accent-cyan)";
     }
   }
 
@@ -715,6 +649,237 @@ class RoombaCockpit {
     }
   }
 
+  // --- Mobile Navigation & Controller Mode Management ---
+
+  setControllerMode(mode) {
+    this.controllerMode = mode;
+    try {
+      localStorage.setItem("roomba_ctrl_mode", mode);
+    } catch (_) {}
+
+    if (mode === "joystick") {
+      if (this.tabCtrlJoystick) this.tabCtrlJoystick.classList.add("active");
+      if (this.tabCtrlDpad) this.tabCtrlDpad.classList.remove("active");
+      if (this.joystickView) this.joystickView.style.display = "flex";
+      if (this.dpadView) this.dpadView.style.display = "none";
+    } else {
+      if (this.tabCtrlJoystick) this.tabCtrlJoystick.classList.remove("active");
+      if (this.tabCtrlDpad) this.tabCtrlDpad.classList.add("active");
+      if (this.joystickView) this.joystickView.style.display = "none";
+      if (this.dpadView) this.dpadView.style.display = "flex";
+    }
+
+    this.resetJoystick();
+    this.stopContinuousDrive();
+  }
+
+  setMobileTab(tab) {
+    this.activeMobileTab = tab;
+    if (this.mobileTabButtons) {
+      this.mobileTabButtons.forEach((btn) => {
+        const t = btn.getAttribute("data-tab");
+        btn.classList.toggle("active", t === tab);
+      });
+    }
+    if (this.cardPanes) {
+      this.cardPanes.forEach((pane) => {
+        const p = pane.getAttribute("data-tab-pane");
+        pane.classList.toggle("active-pane", p === tab);
+      });
+    }
+  }
+
+  handleResize() {
+    const isMobile = window.innerWidth <= 1024;
+    if (isMobile) {
+      this.setMobileTab(this.activeMobileTab);
+    } else {
+      // Show all panes simultaneously on desktop screens
+      if (this.cardPanes) {
+        this.cardPanes.forEach((pane) => pane.classList.remove("active-pane"));
+      }
+    }
+  }
+
+  // --- Large Virtual Analog Joystick Implementation ---
+
+  initJoystick() {
+    if (!this.joystickBase || !this.joystickKnob) return;
+
+    const onPointerDown = (e) => {
+      if (e.isPrimary === false) return;
+      if (e.button !== undefined && e.button !== 0) return;
+
+      if (!this.armed) {
+        alert("Robot is DISARMED. Please click 'ARM ROBOT' to enable driving.");
+        return;
+      }
+
+      e.preventDefault();
+      try {
+        this.joystickBase.setPointerCapture(e.pointerId);
+      } catch (_) {}
+
+      this.isJoystickDragging = true;
+      this.joystickPointerId = e.pointerId;
+
+      const baseRect = this.joystickBase.getBoundingClientRect();
+      const knobRect = this.joystickKnob.getBoundingClientRect();
+      this.joystickCenter = {
+        x: baseRect.left + baseRect.width / 2,
+        y: baseRect.top + baseRect.height / 2,
+      };
+      this.joystickRadius = Math.max(25, (baseRect.width - knobRect.width) / 2);
+
+      this.joystickBase.classList.add("active");
+      this.joystickKnob.classList.add("dragging");
+
+      this.updateJoystickMove(e.clientX, e.clientY);
+      this.startJoystickLoop();
+
+      if ("vibrate" in navigator) {
+        try { navigator.vibrate(15); } catch (_) {}
+      }
+    };
+
+    const onPointerMove = (e) => {
+      if (!this.isJoystickDragging || e.pointerId !== this.joystickPointerId) return;
+      e.preventDefault();
+      this.updateJoystickMove(e.clientX, e.clientY);
+    };
+
+    const onPointerUp = (e) => {
+      if (!this.isJoystickDragging || (this.joystickPointerId !== null && e.pointerId !== this.joystickPointerId)) return;
+      e.preventDefault();
+      try {
+        if (this.joystickBase.hasPointerCapture(e.pointerId)) {
+          this.joystickBase.releasePointerCapture(e.pointerId);
+        }
+      } catch (_) {}
+      this.resetJoystick();
+    };
+
+    this.joystickBase.addEventListener("pointerdown", onPointerDown, { passive: false });
+    this.joystickBase.addEventListener("pointermove", onPointerMove, { passive: false });
+    this.joystickBase.addEventListener("pointerup", onPointerUp, { passive: false });
+    this.joystickBase.addEventListener("pointercancel", onPointerUp, { passive: false });
+    this.joystickBase.addEventListener("lostpointercapture", onPointerUp);
+
+    window.addEventListener("pointerup", (e) => {
+      if (this.isJoystickDragging && e.pointerId === this.joystickPointerId) {
+        this.resetJoystick();
+      }
+    });
+    window.addEventListener("pointercancel", (e) => {
+      if (this.isJoystickDragging && e.pointerId === this.joystickPointerId) {
+        this.resetJoystick();
+      }
+    });
+  }
+
+  updateJoystickMove(clientX, clientY) {
+    const dx = clientX - this.joystickCenter.x;
+    const dy = clientY - this.joystickCenter.y;
+    const dist = Math.hypot(dx, dy);
+    const R = this.joystickRadius;
+
+    let clampedX = dx;
+    let clampedY = dy;
+    if (dist > R) {
+      clampedX = (dx / dist) * R;
+      clampedY = (dy / dist) * R;
+    }
+
+    this.joystickKnob.style.transform = `translate3d(${clampedX.toFixed(1)}px, ${clampedY.toFixed(1)}px, 0)`;
+
+    let nx = clampedX / R;
+    let ny = clampedY / R;
+    const normDist = Math.hypot(nx, ny);
+
+    const deadzone = 0.08;
+    if (normDist < deadzone) {
+      this.joystickVector = { x: 0, y: 0, speedLeft: 0, speedRight: 0 };
+      if (this.joystickReadout) this.joystickReadout.textContent = "DEADZONE • IDLE";
+      if (this.joystickSpeedReadout) this.joystickSpeedReadout.textContent = "L: 0 | R: 0 mm/s";
+      return;
+    }
+
+    const scaledDist = (normDist - deadzone) / (1.0 - deadzone);
+    const easedFactor = (scaledDist * scaledDist + scaledDist) / 2;
+    const factor = easedFactor / normDist;
+    const ex = nx * factor;
+    const ey = ny * factor;
+
+    // Differential drive kinematics: forward = -ey, turn right = +ex
+    const v = -ey * this.driveSpeed;
+    const omega = ex * this.driveSpeed;
+
+    const leftSpeed = Math.round(Math.max(-500, Math.min(500, v + omega)));
+    const rightSpeed = Math.round(Math.max(-500, Math.min(500, v - omega)));
+
+    this.joystickVector = {
+      x: ex,
+      y: ey,
+      speedLeft: leftSpeed,
+      speedRight: rightSpeed,
+    };
+
+    let dirLabel = "";
+    if (ey < -0.2) dirLabel += "FWD";
+    else if (ey > 0.2) dirLabel += "REV";
+
+    if (ex > 0.2) dirLabel += (dirLabel ? " • " : "") + "RIGHT";
+    else if (ex < -0.2) dirLabel += (dirLabel ? " • " : "") + "LEFT";
+
+    if (!dirLabel) dirLabel = "DRIVING";
+    const pct = Math.round(normDist * 100);
+
+    if (this.joystickReadout) {
+      this.joystickReadout.textContent = `${dirLabel} (${pct}%)`;
+    }
+    if (this.joystickSpeedReadout) {
+      this.joystickSpeedReadout.textContent = `L: ${leftSpeed} | R: ${rightSpeed} mm/s`;
+    }
+  }
+
+  startJoystickLoop() {
+    this.stopJoystickLoop();
+    this.sendDriveCommand(this.joystickVector.speedLeft, this.joystickVector.speedRight);
+
+    this.joystickLoop = setInterval(() => {
+      if (this.isJoystickDragging && this.armed) {
+        this.sendDriveCommand(this.joystickVector.speedLeft, this.joystickVector.speedRight);
+      }
+    }, 35);
+  }
+
+  stopJoystickLoop() {
+    if (this.joystickLoop) {
+      clearInterval(this.joystickLoop);
+      this.joystickLoop = null;
+    }
+  }
+
+  resetJoystick() {
+    this.isJoystickDragging = false;
+    this.joystickPointerId = null;
+    this.stopJoystickLoop();
+
+    if (this.joystickKnob) {
+      this.joystickKnob.classList.remove("dragging");
+      this.joystickKnob.style.transform = "translate3d(0px, 0px, 0px)";
+    }
+    if (this.joystickBase) {
+      this.joystickBase.classList.remove("active");
+    }
+
+    this.joystickVector = { x: 0, y: 0, speedLeft: 0, speedRight: 0 };
+    if (this.joystickReadout) this.joystickReadout.textContent = "CENTERED • STOPPED";
+    if (this.joystickSpeedReadout) this.joystickSpeedReadout.textContent = "L: 0 | R: 0 mm/s";
+
+    this.stopDriving();
+  }
+
   getDirectionFromEvent(e) {
     const code = e.code || "";
     const key = (e.key || "").toLowerCase();
@@ -767,6 +932,39 @@ class RoombaCockpit {
       this.consoleOutput.innerHTML = "";
     });
 
+    // Mobile Port Selector Toggle
+    if (this.btnTogglePortSettings && this.portSelectBox) {
+      this.btnTogglePortSettings.addEventListener("click", () => {
+        this.portSelectBox.classList.toggle("mobile-open");
+      });
+    }
+
+    // Mobile Quick Arm Button
+    if (this.btnQuickArm) {
+      this.btnQuickArm.addEventListener("click", () => this.toggleArm());
+    }
+
+    // Mobile Cockpit Tab Navigation
+    if (this.mobileTabButtons) {
+      this.mobileTabButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const tab = btn.getAttribute("data-tab");
+          if (tab) this.setMobileTab(tab);
+        });
+      });
+    }
+
+    // Controller Mode Switcher (Joystick vs D-Pad)
+    if (this.tabCtrlJoystick) {
+      this.tabCtrlJoystick.addEventListener("click", () => this.setControllerMode("joystick"));
+    }
+    if (this.tabCtrlDpad) {
+      this.tabCtrlDpad.addEventListener("click", () => this.setControllerMode("dpad"));
+    }
+
+    // Responsive Window Resize Handler
+    window.addEventListener("resize", () => this.handleResize());
+
     // Speed Slider
     this.speedSlider.addEventListener("input", (e) => {
       this.driveSpeed = parseInt(e.target.value, 10);
@@ -796,8 +994,12 @@ class RoombaCockpit {
         this.pressedDirections.add(dir);
         this.updateKeycapVisuals();
         this.startContinuousDrive(dir);
+        if ("vibrate" in navigator) {
+          try { navigator.vibrate(10); } catch (_) {}
+        }
       };
-      const endHold = () => {
+      const endHold = (e) => {
+        if (e && e.cancelable) e.preventDefault();
         this.pressedDirections.delete(dir);
         this.updateKeycapVisuals();
         if (this.pressedDirections.size === 0) {
@@ -809,10 +1011,11 @@ class RoombaCockpit {
       };
 
       el.addEventListener("mousedown", startHold);
-      el.addEventListener("touchstart", startHold);
+      el.addEventListener("touchstart", startHold, { passive: false });
       el.addEventListener("mouseup", endHold);
       el.addEventListener("mouseleave", endHold);
       el.addEventListener("touchend", endHold);
+      el.addEventListener("touchcancel", endHold);
     };
 
     // Bind hold controls to D-Pad buttons
@@ -985,122 +1188,14 @@ class RoombaCockpit {
       });
     }
 
-    if (this.btnSpeakVoice && this.inputSpeechText) {
-      this.btnSpeakVoice.addEventListener("click", async () => {
-        const text = this.inputSpeechText.value.trim();
-        if (!text) {
-          alert("Please enter text to speak.");
-          return;
-        }
-        const mode = this.selectSpeechMode ? this.selectSpeechMode.value : "formant_interleave";
-        const target = this.selectSpeechTarget ? this.selectSpeechTarget.value : "roomba";
-
-        if (target === "browser" || target === "both") {
-          this.speakHumanVoice(text);
-        }
-
-        if (target === "roomba" || target === "both") {
-          try {
-            this.log(`Grinding speech "${text}" (${mode})...`, "info");
-            const res = await fetch("/api/sound/speech", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ text, mode }),
-            });
-            if (!res.ok) {
-              const err = await res.json();
-              throw new Error(err.detail || "Speech failed");
-            }
-            const data = await res.json();
-            this.log(`Roomba speaker vocalized "${text}" (${data.notes_count} notes)`, "success");
-          } catch (err) {
-            this.log(`Speech Grinder error: ${err.message}`, "error");
-          }
-        }
-      });
-    }
-
-    // Live Microphone Voice Grinder
-    if (this.btnRecordMic) {
-      this.btnRecordMic.addEventListener("click", async () => {
-        if (!this.isRecordingMic) {
-          try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            this.micMediaRecorder = new MediaRecorder(stream);
-            this.micAudioChunks = [];
-            this.micMediaRecorder.ondataavailable = (e) => {
-              if (e.data.size > 0) this.micAudioChunks.push(e.data);
-            };
-            this.micMediaRecorder.onstop = async () => {
-              const blob = new Blob(this.micAudioChunks, { type: this.micMediaRecorder.mimeType });
-              stream.getTracks().forEach((t) => t.stop());
-              await this.uploadAndGrindAudioBlob(blob);
-            };
-            this.micMediaRecorder.start();
-            this.isRecordingMic = true;
-            this.btnRecordMic.classList.add("mic-recording");
-            if (this.micIcon) this.micIcon.textContent = "⏹️";
-            if (this.micLabel) this.micLabel.textContent = "Stop & Grind Voice to Roomba";
-            if (this.micStatusBadge) {
-              this.micStatusBadge.textContent = "RECORDING...";
-              this.micStatusBadge.className = "badge badge-danger";
-            }
-            this.log("Microphone recording started. Speak now!", "info");
-          } catch (err) {
-            this.log(`Microphone access error: ${err.message}`, "error");
-            alert(`Microphone access error: ${err.message}`);
-          }
-        } else {
-          this.micMediaRecorder.stop();
-          this.isRecordingMic = false;
-          this.btnRecordMic.classList.remove("mic-recording");
-          if (this.micIcon) this.micIcon.textContent = "🎤";
-          if (this.micLabel) this.micLabel.textContent = "Record Voice & Grind to Roomba";
-          if (this.micStatusBadge) {
-            this.micStatusBadge.textContent = "GRINDING...";
-            this.micStatusBadge.className = "badge badge-warn";
-          }
-          this.log("Recording stopped. Grinding audio for Roomba speaker...", "info");
-        }
-      });
-    }
-
-    // Audio File Grinder (.wav)
-    if (this.btnGrindFile && this.inputAudioFile) {
-      this.btnGrindFile.addEventListener("click", async () => {
-        if (!this.inputAudioFile.files || this.inputAudioFile.files.length === 0) {
-          alert("Please select a .wav audio file first.");
-          return;
-        }
-        const file = this.inputAudioFile.files[0];
-        try {
-          this.log(`Uploading & grinding "${file.name}"...`, "info");
-          const formData = new FormData();
-          formData.append("file", file);
-          const res = await fetch("/api/sound/grind_audio", {
-            method: "POST",
-            body: formData,
-          });
-          if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.detail || "File grinding failed");
-          }
-          const data = await res.json();
-          this.log(`Audio file ground into ${data.notes_count} Roomba notes (${data.duration_s?.toFixed(2)}s) and playing!`, "success");
-        } catch (err) {
-          this.log(`File grinding error: ${err.message}`, "error");
-        }
-      });
-    }
-
-    // Interactive Human Soundboard Chips
-    const soundChips = document.querySelectorAll(".btn-sound-chip");
+    // Robot Sound Marks (Functional Audio Cues)
+    const soundChips = document.querySelectorAll(".btn-sound-chip[data-mark]");
     soundChips.forEach((chip) => {
       chip.addEventListener("click", () => {
-        const sound = chip.getAttribute("data-sound");
-        if (sound) {
-          this.log(`Triggered vocal sound: "${sound}"`, "info");
-          this.executeAction("human", { sound });
+        const mark = chip.getAttribute("data-mark");
+        if (mark) {
+          this.log(`Triggered sound mark: "${mark}"`, "info");
+          this.executeAction("sound_mark", { mark });
         }
       });
     });

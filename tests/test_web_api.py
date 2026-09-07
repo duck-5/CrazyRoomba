@@ -179,24 +179,42 @@ def test_websocket_telemetry():
 
 
 def test_sound_and_melody_actions():
-    """Verify sound presets, tune playback, custom songs, RTTTL ringtones, and Morse code."""
+    """Verify 8-bit songs, sound marks, custom songs, RTTTL ringtones, and Morse code."""
     with TestClient(app) as client:
         # Check presets endpoint before connect
         res_presets = client.get("/api/sound/presets")
         assert res_presets.status_code == 200
         data = res_presets.json()
-        assert "mario" in data["presets"]
-        assert "imperial" in data["presets"]
+        assert "songs" in data
+        assert "sound_marks" in data
+        assert "presets" in data
         assert "rtttl_samples" in data
+
+        # Check iconic 8-bit songs
+        assert "tetris" in data["songs"]
+        assert "mario_kart_circuit" in data["songs"]
+        assert "pacman" in data["songs"]
+        assert "zelda_theme" in data["songs"]
+
+        # Check robot sound marks
+        assert "startup" in data["sound_marks"]
+        assert "dock_success" in data["sound_marks"]
+        assert "clean_done" in data["sound_marks"]
+        assert "ack" in data["sound_marks"]
 
         # Connect in mock mode
         client.post("/api/connect", json={"mock": True, "mode": "Safe"})
 
-        # 1. Preset tune
-        res_tune = client.post("/api/action", json={"action": "tune", "preset": "mario"})
+        # 1. Play 8-bit song via /api/action (tune preset)
+        res_tune = client.post("/api/action", json={"action": "tune", "preset": "tetris"})
         assert res_tune.status_code == 200
         assert res_tune.json()["action"] == "tune"
-        assert res_tune.json()["preset"] == "mario"
+        assert res_tune.json()["preset"] == "tetris"
+        assert res_tune.json()["notes_count"] > 0
+
+        res_tune_circuit = client.post("/api/action", json={"action": "tune", "preset": "mario_kart_circuit"})
+        assert res_tune_circuit.status_code == 200
+        assert res_tune_circuit.json()["notes_count"] > 0
 
         # 2. Custom song
         res_song = client.post("/api/sound/play", json={"action": "song", "notes": [[60, 8], [64, 8], [67, 16]]})
@@ -211,7 +229,7 @@ def test_sound_and_melody_actions():
         assert res_rtttl.json()["action"] == "rtttl"
         assert res_rtttl.json()["notes_count"] == 4
 
-        # 4. Morse code audio transmission (including note=None regression check)
+        # 4. Morse code audio transmission
         res_morse = client.post("/api/sound/play", json={"action": "morse", "text": "SOS", "note": 76})
         assert res_morse.status_code == 200
         assert res_morse.json()["action"] == "morse"
@@ -229,66 +247,26 @@ def test_sound_and_melody_actions():
         assert res_sos.json()["action"] == "sos"
         assert res_sos.json()["text"] == "SOS"
 
-        # 6. Human vocal gestures and speech synthesis
-        assert "human_sounds" in data
-        assert "hello" in data["human_sounds"]
-        assert "laugh" in data["human_sounds"]
+        # 6. Robot Sound Marks via /api/sound/mark
+        res_mark1 = client.post("/api/sound/mark", json={"mark": "startup"})
+        assert res_mark1.status_code == 200
+        assert res_mark1.json()["action"] == "sound_mark"
+        assert res_mark1.json()["mark"] == "startup"
+        assert res_mark1.json()["notes_count"] > 0
 
-        res_human = client.post("/api/action", json={"action": "human", "sound": "hello"})
-        assert res_human.status_code == 200
-        assert res_human.json()["sound"] == "hello"
+        res_mark2 = client.post("/api/sound/mark", json={"mark": "dock_success"})
+        assert res_mark2.status_code == 200
+        assert res_mark2.json()["mark"] == "dock_success"
 
-        res_speak = client.post("/api/action", json={"action": "speak", "text": "Hello world!"})
-        assert res_speak.status_code == 200
-        assert res_speak.json()["action"] == "speak"
-        assert res_speak.json()["notes_count"] > 0
+        # Sound mark via /api/action
+        res_mark3 = client.post("/api/action", json={"action": "sound_mark", "mark": "clean_done"})
+        assert res_mark3.status_code == 200
+        assert res_mark3.json()["action"] == "sound_mark"
+        assert res_mark3.json()["mark"] == "clean_done"
 
-        # Expanded vocal gestures
-        assert "scream" in data["human_sounds"]
-        assert "cough" in data["human_sounds"]
-        assert "roomba" in data["human_sounds"]
-        res_scream = client.post("/api/action", json={"action": "human", "sound": "scream"})
-        assert res_scream.status_code == 200
-        assert res_scream.json()["sound"] == "scream"
-
-        # 7. Dedicated Speech Grinder Endpoint (/api/sound/speech)
-        res_grind_speech = client.post("/api/sound/speech", json={"text": "Roomba help", "mode": "formant_interleave"})
-        assert res_grind_speech.status_code == 200
-        assert res_grind_speech.json()["action"] == "speak_roomba"
-        assert res_grind_speech.json()["notes_count"] > 0
-
-        # Dominant peak mode
-        res_peak_speech = client.post("/api/sound/speech", json={"text": "Danger", "mode": "dominant_peak"})
-        assert res_peak_speech.status_code == 200
-        assert res_peak_speech.json()["notes_count"] > 0
-
-        # 8. Dedicated Audio Grinder Endpoint (/api/sound/grind_audio) with WAV upload
-        import io
-        import base64
-        import numpy as np
-        from scipy.io import wavfile
-
-        sr = 16000
-        t = np.linspace(0, 0.25, int(sr * 0.25), endpoint=False)
-        sig = (0.5 * np.sin(2 * np.pi * 500 * t) * 32767).astype(np.int16)
-        buf = io.BytesIO()
-        wavfile.write(buf, sr, sig)
-        wav_bytes = buf.getvalue()
-
-        files = {"file": ("test_voice.wav", wav_bytes, "audio/wav")}
-        res_upload = client.post("/api/sound/grind_audio", files=files)
-        assert res_upload.status_code == 200
-        upload_data = res_upload.json()
-        assert upload_data["action"] == "grind_audio"
-        assert upload_data["notes_count"] > 0
-        assert upload_data["duration_s"] > 0.0
-
-        # Base64 payload via /api/action
-        b64_payload = base64.b64encode(wav_bytes).decode("ascii")
-        res_b64 = client.post("/api/action", json={"action": "grind_audio", "audio_base64": b64_payload})
-        assert res_b64.status_code == 200
-        assert res_b64.json()["action"] == "grind_audio"
-        assert res_b64.json()["notes_count"] > 0
+        # Invalid sound mark should return 400
+        res_bad_mark = client.post("/api/sound/mark", json={"mark": "non_existent_mark_xyz"})
+        assert res_bad_mark.status_code == 400
 
 
 if __name__ == "__main__":

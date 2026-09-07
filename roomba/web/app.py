@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -18,12 +18,6 @@ from pydantic import BaseModel, Field
 from roomba.core.controller import RobotController
 from roomba.driver.discovery import list_serial_ports
 from roomba.config import config, STATIC_DIR
-
-try:
-    import multipart
-    _HAS_MULTIPART = True
-except ImportError:
-    _HAS_MULTIPART = False
 
 logger = logging.getLogger("roomba.web.app")
 
@@ -43,18 +37,18 @@ class ModeRequest(BaseModel):
     mode: str = Field(..., description="Target mode: safe, full, passive, off")
 
 
+class DriveRequest(BaseModel):
+    left: int = Field(..., ge=-500, le=500, description="Left wheel speed in mm/s")
+    right: int = Field(..., ge=-500, le=500, description="Right wheel speed in mm/s")
+
+
 class BehaviorRequest(BaseModel):
-    behavior: str = Field(..., description="Behavior to activate: manual, wander, follow")
+    behavior: str = Field(..., description="Behavior name: wander, follow_person, etc.")
     params: Optional[Dict[str, Any]] = None
 
 
 class PerceptionRequest(BaseModel):
     target: Dict[str, Any] = Field(..., description="Perception detections / targets dictionary")
-
-
-class DriveRequest(BaseModel):
-    left: int = Field(..., ge=-500, le=500, description="Left wheel speed in mm/s")
-    right: int = Field(..., ge=-500, le=500, description="Right wheel speed in mm/s")
 
 
 class NudgeRequest(BaseModel):
@@ -64,24 +58,23 @@ class NudgeRequest(BaseModel):
 
 
 class ActionRequest(BaseModel):
-    action: str = Field(..., description="Action name: beep, tune, song, rtttl, morse, sos, human, vocal, speak, speak_roomba, grind_audio, clean, spot, dock, mock_sensor")
+    action: str = Field(..., description="Action name: beep, tune, song, sound_mark, rtttl, morse, sos, clean, spot, dock, mock_sensor")
     note: Optional[int] = 72
     duration: Optional[int] = 16
     preset: Optional[str] = None
+    song: Optional[str] = None
+    mark: Optional[str] = None
     sound: Optional[str] = None
     notes: Optional[List[List[int]]] = None
     rtttl: Optional[str] = None
     text: Optional[str] = None
     dot_duration: Optional[int] = 6
-    audio_base64: Optional[str] = None
-    mode: Optional[str] = "formant_interleave"
     sensor: Optional[str] = None
     value: Optional[Any] = None
 
 
-class SpeechRequest(BaseModel):
-    text: str = Field(..., description="Text phrase to grind into Roomba formant audio")
-    mode: Optional[str] = Field("formant_interleave", description="Grind mode: formant_interleave, dominant_peak, pitch_f0")
+class SoundMarkRequest(BaseModel):
+    mark: str = Field(..., description="Sound mark name: startup, shutdown, dock_success, clean_done, obstacle_alert, cliff_warning, low_battery, ack, nack, reverse_beep, happy, sad")
 
 
 def create_app() -> FastAPI:
@@ -250,14 +243,14 @@ def create_app() -> FastAPI:
                 req.action,
                 note=req.note,
                 duration=req.duration,
-                preset=req.preset,
-                sound=req.sound,
+                preset=req.preset or req.song,
+                song=req.song or req.preset,
+                mark=req.mark or req.sound,
+                sound=req.sound or req.mark,
                 notes=req.notes,
                 rtttl=req.rtttl,
                 text=req.text,
                 dot_duration=req.dot_duration,
-                audio_base64=req.audio_base64,
-                mode=req.mode,
                 sensor=req.sensor,
                 value=req.value,
             )
@@ -266,7 +259,7 @@ def create_app() -> FastAPI:
 
     @application.get("/api/sound/presets")
     async def api_sound_presets():
-        """Return available preset tunes and sample RTTTL ringtone strings."""
+        """Return available 8-bit songs, sound marks, and sample RTTTL ringtone strings."""
         return controller.get_sound_presets()
 
     @application.post("/api/sound/play")
@@ -274,56 +267,13 @@ def create_app() -> FastAPI:
         """Play a tune, custom song, RTTTL string, Morse code, or beep."""
         return await api_action(req)
 
-    @application.post("/api/sound/speech")
-    async def api_sound_speech(req: SpeechRequest):
-        """Grind text phrase into speech waveform, analyze formants, and play on Roomba speaker."""
+    @application.post("/api/sound/mark")
+    async def api_sound_mark(req: SoundMarkRequest):
+        """Play a robot acoustic sound mark / earcon."""
         try:
-            return await controller.execute_action("speak_roomba", text=req.text, mode=req.mode)
+            return await controller.execute_action("sound_mark", mark=req.mark)
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
-
-    if _HAS_MULTIPART:
-        @application.post("/api/sound/grind_audio")
-        async def api_sound_grind_audio(
-            file: Optional[UploadFile] = File(None),
-            req: Optional[ActionRequest] = None,
-        ):
-            """
-            Grind an uploaded WAV file or base64 audio payload into Roomba Open Interface signals
-            and stream directly to the Roomba speaker.
-            """
-            try:
-                wav_bytes = None
-                mode = "formant_interleave"
-                if file is not None:
-                    wav_bytes = await file.read()
-                elif req is not None and req.audio_base64:
-                    import base64
-                    wav_bytes = base64.b64decode(req.audio_base64)
-                    if req.mode:
-                        mode = req.mode
-
-                if not wav_bytes:
-                    raise HTTPException(status_code=400, detail="No audio file or base64 data provided.")
-
-                return await controller.execute_action("grind_audio", wav_bytes=wav_bytes, mode=mode)
-            except HTTPException:
-                raise
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=str(e))
-    else:
-        @application.post("/api/sound/grind_audio")
-        async def api_sound_grind_audio_fallback(req: Optional[ActionRequest] = None):
-            """Fallback when python-multipart is not installed."""
-            if req is not None and req.audio_base64:
-                import base64
-                wav_bytes = base64.b64decode(req.audio_base64)
-                mode = req.mode or "formant_interleave"
-                return await controller.execute_action("grind_audio", wav_bytes=wav_bytes, mode=mode)
-            raise HTTPException(
-                status_code=501,
-                detail="File uploads require python-multipart. Install with: pip install python-multipart",
-            )
 
 
     @application.post("/api/odometry/reset")

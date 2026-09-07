@@ -115,63 +115,59 @@ def test_odometry_kinematics_and_rollover():
     assert client.total_angle_deg == 0.0
 
 
-def test_sound_grind_audio_to_roomba_notes():
-    """Verify audio grinding DSP pipeline handles silence, tones, consonants, and run-length compression."""
-    import numpy as np
-    from roomba.driver.sound import grind_audio_to_roomba_notes
+def test_eight_bit_songs_and_sound_marks():
+    """Verify 8-bit songs and robot sound marks dictionaries contain valid Open Interface note sequences."""
+    from roomba.driver.sound import EIGHT_BIT_SONGS, SOUND_MARKS, PRESET_TUNES
 
-    sr = 16000
-    # 1. Pure silence -> all rests (0, dur)
-    silence = np.zeros(sr, dtype=np.float32)
-    notes_silence = grind_audio_to_roomba_notes(silence, sr)
-    assert len(notes_silence) >= 1
-    assert all(p == 0 for p, _ in notes_silence)
+    # Check key songs exist
+    expected_songs = ["tetris", "mario_kart_start", "mario_kart_circuit", "mario_overworld", "pacman", "zelda_theme", "doom_e1m1", "pokemon_title"]
+    for song_name in expected_songs:
+        assert song_name in EIGHT_BIT_SONGS
+        notes = EIGHT_BIT_SONGS[song_name]
+        assert len(notes) > 0
+        for pitch, dur in notes:
+            assert 0 <= pitch <= 127
+            assert 1 <= dur <= 255
 
-    # 2. Pure 440 Hz tone (A4, MIDI 69)
-    t = np.linspace(0, 0.5, int(sr * 0.5), endpoint=False)
-    tone_440 = (0.8 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
-    notes_tone = grind_audio_to_roomba_notes(tone_440, sr, mode="dominant_peak")
-    assert len(notes_tone) >= 1
-    # Check that the detected pitch is close to 69 (A4)
-    pitches = [p for p, _ in notes_tone if p > 0]
-    assert len(pitches) > 0
-    assert any(abs(p - 69) <= 2 for p in pitches)
+    # Check robot sound marks exist
+    expected_marks = ["startup", "shutdown", "dock_success", "clean_done", "obstacle_alert", "cliff_warning", "low_battery", "ack", "nack", "reverse_beep", "happy", "sad"]
+    for mark_name in expected_marks:
+        assert mark_name in SOUND_MARKS
+        notes = SOUND_MARKS[mark_name]
+        assert len(notes) > 0
+        for pitch, dur in notes:
+            assert 0 <= pitch <= 127
+            assert 1 <= dur <= 255
 
-    # 3. High-frequency noise (unvoiced consonant simulation)
-    noise = np.random.uniform(-0.8, 0.8, int(sr * 0.2)).astype(np.float32)
-    notes_noise = grind_audio_to_roomba_notes(noise, sr)
-    assert len(notes_noise) >= 1
-    # High ZCR noise maps to higher pitch range
-    high_pitches = [p for p, _ in notes_noise if p >= 80]
-    assert len(high_pitches) > 0
+    # Check presets include songs and marks
+    for s in expected_songs:
+        assert s in PRESET_TUNES
+    for m in expected_marks:
+        assert m in PRESET_TUNES
 
 
-def test_sound_speech_synthesis_and_wav_grinding():
-    """Verify speech synthesis and WAV bytes grinding produce valid Roomba note sequences."""
-    import io
-    import numpy as np
-    from scipy.io import wavfile
-    from roomba.driver.sound import synthesize_and_grind_speech, grind_wav_bytes_to_notes
+def test_rtttl_and_morse_sound_generation():
+    """Verify RTTTL string parsing and Morse code note generation."""
+    from roomba.driver.sound import rtttl_to_notes, text_to_morse_notes, generate_sos_notes
 
-    # 1. Speech synthesis
-    notes = synthesize_and_grind_speech("Roomba start cleaning")
-    assert len(notes) > 0
+    # 1. RTTTL parsing
+    rtttl_str = "mario:d=4,o=5,b=100:16e6,16e6,32p,8e6"
+    notes = rtttl_to_notes(rtttl_str)
+    assert len(notes) == 4
     for pitch, dur in notes:
         assert 0 <= pitch <= 127
         assert 1 <= dur <= 255
 
-    # 2. WAV byte buffer grinding
-    sr = 16000
-    t = np.linspace(0, 0.3, int(sr * 0.3), endpoint=False)
-    sig = (0.6 * np.sin(2 * np.pi * 587 * t) * 32767).astype(np.int16) # D5, ~MIDI 74
-    buf = io.BytesIO()
-    wavfile.write(buf, sr, sig)
-    wav_bytes = buf.getvalue()
+    # 2. Morse code generation
+    morse_notes = text_to_morse_notes("SOS", note=76, dot_duration=6)
+    assert len(morse_notes) > 0
+    for pitch, dur in morse_notes:
+        assert pitch in (0, 76)
+        assert dur > 0
 
-    ground_notes = grind_wav_bytes_to_notes(wav_bytes)
-    assert len(ground_notes) > 0
-    detected_pitches = [p for p, _ in ground_notes if p > 0]
-    assert len(detected_pitches) > 0
-    assert any(abs(p - 74) <= 2 for p in detected_pitches)
+    # 3. SOS helper
+    sos_notes = generate_sos_notes()
+    assert len(sos_notes) == len(morse_notes)
+
 
 

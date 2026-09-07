@@ -126,3 +126,91 @@ def test_odometry_reset_endpoint():
         assert res.json()["status"] == "ok"
         assert res.json()["action"] == "reset_odometry"
 
+
+def test_mobile_elements_present():
+    """Verify that mobile viewport, navigation tabs, and virtual joystick controllers are in the index page."""
+    with TestClient(app) as client:
+        res = client.get("/")
+        assert res.status_code == 200
+        html = res.text
+
+        # Mobile viewport & web app tags
+        assert 'name="viewport"' in html
+        assert "viewport-fit=cover" in html
+        assert "user-scalable=no" in html
+
+        # Mobile Cockpit Tab Bar
+        assert 'id="mobile-tab-bar"' in html
+        assert 'data-tab="drive"' in html
+        assert 'data-tab="schematic"' in html
+        assert 'data-tab="power"' in html
+        assert 'data-tab="console"' in html
+
+        # Mobile Quick Status HUD
+        assert 'id="mobile-quick-status"' in html
+        assert 'id="btn-quick-arm"' in html
+
+        # Large Virtual Analog Joystick Controller
+        assert 'id="joystick-view"' in html
+        assert 'id="joystick-base"' in html
+        assert 'id="joystick-knob"' in html
+        assert 'id="joystick-readout"' in html
+        assert 'id="joystick-speed-readout"' in html
+
+        # Controller Mode Switcher
+        assert "controller-mode-switcher" in html
+        assert 'id="tab-ctrl-joystick"' in html
+        assert 'id="tab-ctrl-dpad"' in html
+
+
+def test_smooth_differential_drive():
+    """Verify that fine-grained differential drive speeds (as produced by analog joystick) are accepted."""
+    with TestClient(app) as client:
+        client.post("/api/connect", json={"mock": True, "mode": "Safe"})
+        client.post("/api/arm")
+
+        # Smooth analog arc turn (left wheel faster, right wheel slower)
+        res = client.post("/api/drive", json={"left": 210, "right": 140})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "driving"
+        assert data["left"] == 210
+        assert data["right"] == 140
+
+
+def test_eight_bit_jukebox_and_soundmarks_html():
+    """Verify 8-bit chiptune jukebox & sound marks are present in HTML, and old speech/mic grinder is absent."""
+    with TestClient(app) as client:
+        res = client.get("/")
+        assert res.status_code == 200
+        html = res.text
+
+        # 8-Bit Chiptune Jukebox UI
+        assert 'id="select-preset-tune"' in html
+        assert 'value="tetris"' in html
+        assert 'value="mario_kart_circuit"' in html
+        assert 'value="mario_kart_start"' in html
+        assert 'value="mario_overworld"' in html
+        assert 'value="pacman"' in html
+        assert 'value="zelda_theme"' in html
+        assert 'value="doom_e1m1"' in html
+        assert 'id="btn-play-tune"' in html
+
+        # Robot Sound Marks Soundboard
+        assert 'id="soundmarks-container"' in html
+        assert 'data-mark="startup"' in html
+        assert 'data-mark="dock_success"' in html
+        assert 'data-mark="clean_done"' in html
+        assert 'data-mark="ack"' in html
+        assert 'data-mark="obstacle_alert"' in html
+        assert 'data-mark="cliff_warning"' in html
+        assert 'data-mark="low_battery"' in html
+
+        # Verification that pseudo-speech / mic grinder elements have been completely removed
+        assert 'id="btn-speak-voice"' not in html
+        assert 'id="btn-record-mic"' not in html
+        assert 'id="btn-grind-file"' not in html
+        assert 'id="input-speech-text"' not in html
+
+
+

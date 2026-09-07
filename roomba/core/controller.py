@@ -16,15 +16,13 @@ from roomba.driver.client import RoombaClient
 from roomba.driver.mock import MockRoombaClient
 from roomba.driver.discovery import find_roomba_port
 from roomba.driver.sound import (
+    EIGHT_BIT_SONGS,
+    SOUND_MARKS,
     PRESET_TUNES,
     RTTTL_SAMPLES,
-    HUMAN_SOUNDS,
     rtttl_to_notes,
     text_to_morse_notes,
-    text_to_vocal_tones,
-    grind_audio_to_roomba_notes,
-    grind_wav_bytes_to_notes,
-    synthesize_and_grind_speech,
+    generate_sos_notes,
 )
 from roomba.modes.manager import ModeManager
 from roomba.modes.manual import ManualMode
@@ -367,14 +365,29 @@ class RobotController:
             self.log_event("info", f"Triggered Beep (MIDI note {note})")
             return {"status": "ok", "action": "beep", "note": note, "duration": duration}
 
-        elif act == "tune":
-            preset = str(kwargs.get("preset", "mario")).lower()
-            if preset not in PRESET_TUNES:
-                raise ValueError(f"Unknown preset tune: '{preset}'. Available: {list(PRESET_TUNES.keys())}")
-            notes = PRESET_TUNES[preset]
+        elif act in ("tune", "song_8bit", "song_preset"):
+            preset = str(kwargs.get("preset", kwargs.get("song", "tetris"))).lower()
+            if preset in EIGHT_BIT_SONGS:
+                notes = EIGHT_BIT_SONGS[preset]
+            elif preset in PRESET_TUNES:
+                notes = PRESET_TUNES[preset]
+            else:
+                raise ValueError(f"Unknown 8-bit song/preset: '{preset}'. Available: {list(EIGHT_BIT_SONGS.keys())}")
             await self.client.play_tune(notes)
-            self.log_event("info", f"Played Preset Tune '{preset}' ({len(notes)} notes)")
+            self.log_event("info", f"Played 8-Bit Song '{preset}' ({len(notes)} notes)")
             return {"status": "ok", "action": "tune", "preset": preset, "notes_count": len(notes)}
+
+        elif act in ("sound_mark", "mark", "human"):
+            mark = str(kwargs.get("mark", kwargs.get("sound", kwargs.get("preset", "startup")))).lower()
+            if mark in SOUND_MARKS:
+                notes = SOUND_MARKS[mark]
+            elif mark in PRESET_TUNES:
+                notes = PRESET_TUNES[mark]
+            else:
+                raise ValueError(f"Unknown sound mark: '{mark}'. Available: {list(SOUND_MARKS.keys())}")
+            await self.client.play_tune(notes)
+            self.log_event("info", f"Played Sound Mark '{mark}' ({len(notes)} notes)")
+            return {"status": "ok", "action": "sound_mark", "mark": mark, "sound": mark, "notes_count": len(notes)}
 
         elif act == "song":
             raw_notes = kwargs.get("notes", [])
@@ -418,45 +431,6 @@ class RobotController:
             self.log_event("info", f"Transmitted SOS emergency signal ({len(notes)} tones/gaps)")
             return {"status": "ok", "action": "sos", "text": "SOS", "notes_count": len(notes)}
 
-        elif act in ("human", "vocal", "voice", "speak", "speak_roomba"):
-            sound_name = str(kwargs.get("sound", kwargs.get("preset", "hello"))).lower()
-            if sound_name in HUMAN_SOUNDS:
-                notes = HUMAN_SOUNDS[sound_name]
-                await self.client.play_tune(notes)
-                self.log_event("info", f"Played Human Vocal Sound '{sound_name}' ({len(notes)} notes)")
-                return {"status": "ok", "action": act, "sound": sound_name, "notes_count": len(notes)}
-            else:
-                text = str(kwargs.get("text", sound_name))
-                mode = str(kwargs.get("mode", "formant_interleave"))
-                try:
-                    notes = synthesize_and_grind_speech(text, mode=mode)
-                except Exception as e:
-                    logger.warning(f"Error in synthesize_and_grind_speech: {e}")
-                    notes = text_to_vocal_tones(text)
-                if not notes:
-                    notes = text_to_vocal_tones(text)
-                if notes:
-                    await self.client.play_tune(notes)
-                self.log_event("info", f"Ground and played Human Voice for '{text}' ({len(notes)} notes)")
-                return {"status": "ok", "action": act, "text": text, "notes_count": len(notes)}
-
-        elif act in ("grind_audio", "audio_grind"):
-            import base64
-            audio_b64 = kwargs.get("audio_base64")
-            wav_bytes = kwargs.get("wav_bytes")
-            if audio_b64 and not wav_bytes:
-                wav_bytes = base64.b64decode(audio_b64)
-            if not wav_bytes:
-                raise ValueError("No audio payload provided for grind_audio")
-            mode = str(kwargs.get("mode", "formant_interleave"))
-            notes = grind_wav_bytes_to_notes(wav_bytes, mode=mode)
-            if notes:
-                await self.client.play_tune(notes)
-            dur_s = sum(d for _, d in notes) / 64.0 if notes else 0.0
-            self.log_event("info", f"Ground audio signal into {len(notes)} Roomba notes ({dur_s:.2f}s)")
-            return {"status": "ok", "action": "grind_audio", "notes_count": len(notes), "duration_s": dur_s}
-
-
         elif act == "clean":
             self.disarm()
             await self.client.clean()
@@ -496,16 +470,12 @@ class RobotController:
         return {"status": "ok", "action": "reset_odometry"}
 
     def get_sound_presets(self) -> Dict[str, Any]:
-        """Return available preset tunes, human sounds, and sample RTTTL ringtone strings."""
+        """Return available 8-bit songs, sound marks, preset tunes, and sample RTTTL ringtone strings."""
         return {
+            "songs": list(EIGHT_BIT_SONGS.keys()),
+            "sound_marks": list(SOUND_MARKS.keys()),
             "presets": list(PRESET_TUNES.keys()),
-            "human_sounds": list(HUMAN_SOUNDS.keys()),
-            "rtttl_samples": {
-                "Mario": "mario:d=4,o=5,b=100:16e6,16e6,32p,8e6,16c6,8e6,8g6,8p,8g",
-                "Imperial March": "imperial:d=4,o=5,b=100:e,e,e,8c,16g,e,8c,16g,2e",
-                "Mission Impossible": "mission:d=4,o=6,b=150:16d,16d#,16d,16d#,16d,16d#,16d,16d#,16d,16d,16d#,16e,16f,16f#,16g,8g.,8p,8g.,8p,8a#.,8p,8c7.,8p",
-                "Zelda Secret": "zelda:d=4,o=5,b=125:8g,8f#,8d#,8a4,8g#4,8e,8g#,2c6"
-            }
+            "rtttl_samples": RTTTL_SAMPLES,
         }
 
     # --- Background Telemetry & Watchdog ---
