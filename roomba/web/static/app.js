@@ -63,6 +63,7 @@ class RoombaCockpit {
     this.cardPanes = document.querySelectorAll(".card[data-tab-pane]");
     this.mobileQuickStatus = document.getElementById("mobile-quick-status");
     this.quickBatteryText = document.getElementById("quick-battery-text");
+    this.quickPiBatteryText = document.getElementById("quick-pi-battery-text");
     this.quickModeText = document.getElementById("quick-mode-text");
     this.quickArmBadge = document.getElementById("quick-arm-badge");
     this.btnQuickArm = document.getElementById("btn-quick-arm");
@@ -129,6 +130,13 @@ class RoombaCockpit {
     this.chgStateBadge = document.getElementById("chg-state-badge");
     this.batteryFill = document.getElementById("battery-fill");
     this.batteryPctText = document.getElementById("battery-pct-text");
+    this.piChgStateBadge = document.getElementById("pi-chg-state-badge");
+    this.piBatteryFill = document.getElementById("pi-battery-fill");
+    this.piBatteryPctText = document.getElementById("pi-battery-pct-text");
+    this.piStatVoltage = document.getElementById("pi-stat-voltage");
+    this.piStatCurrent = document.getElementById("pi-stat-current");
+    this.piStatTemp = document.getElementById("pi-stat-temp");
+    this.piStatSource = document.getElementById("pi-stat-source");
     this.statVoltage = document.getElementById("stat-voltage");
     this.statVoltageMv = document.getElementById("stat-voltage-mv");
     this.statCurrent = document.getElementById("stat-current");
@@ -295,6 +303,12 @@ class RoombaCockpit {
         }
       });
     }
+    if (this.btnToggleFollow) {
+      const following = this.activeBehavior.toLowerCase() === "follow_person";
+      this.btnToggleFollow.textContent = following ? "⏹ Stop Follow Person" : "👤 Start Follow Person";
+      this.btnToggleFollow.classList.toggle("btn-danger", following);
+      this.btnToggleFollow.classList.toggle("btn-primary", !following);
+    }
 
     // 3. Safety & Arming
     if (this.armed) {
@@ -393,6 +407,7 @@ class RoombaCockpit {
 
     // 7. Mobile Quick Status HUD
     if (this.quickBatteryText) this.quickBatteryText.textContent = `${pct}%`;
+    if (data.pi_battery) this.renderPiBattery(data.pi_battery);
     if (this.quickModeText) this.quickModeText.textContent = this.currentMode.toUpperCase();
     if (this.quickArmBadge) {
       this.quickArmBadge.className = this.armed ? "badge badge-armed" : "badge badge-disarmed";
@@ -406,6 +421,65 @@ class RoombaCockpit {
     if (quickDrive) {
       quickDrive.textContent = this.isDriving ? "DRIVING" : "STOPPED";
       quickDrive.style.color = this.isDriving ? "var(--accent-green)" : "var(--accent-cyan)";
+    }
+  }
+
+  renderPiBattery(pi) {
+    if (!pi) return;
+
+    const hasPct = pi.available && pi.percent !== null && pi.percent !== undefined;
+    const pct = hasPct ? Number(pi.percent) : 0;
+
+    if (this.piBatteryFill) {
+      this.piBatteryFill.classList.remove("batt-mid", "batt-low", "batt-na");
+      if (!hasPct) {
+        this.piBatteryFill.style.width = "100%";
+        this.piBatteryFill.classList.add("batt-na");
+      } else {
+        this.piBatteryFill.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+        if (pct < 20) {
+          this.piBatteryFill.classList.add("batt-low");
+        } else if (pct < 50) {
+          this.piBatteryFill.classList.add("batt-mid");
+        }
+      }
+    }
+
+    if (this.piBatteryPctText) {
+      this.piBatteryPctText.textContent = hasPct
+        ? `${pct}%`
+        : (pi.voltage_v != null ? `${pi.voltage_v} V` : "N/A");
+    }
+
+    if (this.piChgStateBadge) {
+      this.piChgStateBadge.className = "badge";
+      if (pi.under_voltage) {
+        this.piChgStateBadge.textContent = "UNDERVOLT";
+        this.piChgStateBadge.classList.add("badge-danger");
+      } else if (pi.charging) {
+        this.piChgStateBadge.textContent = pi.status || "Charging";
+        this.piChgStateBadge.classList.add("badge-success");
+      } else {
+        this.piChgStateBadge.textContent = pi.status || "Unavailable";
+      }
+    }
+
+    if (this.piStatVoltage) {
+      this.piStatVoltage.textContent = pi.voltage_v != null ? `${pi.voltage_v} V` : "-- V";
+    }
+    if (this.piStatCurrent) {
+      this.piStatCurrent.textContent = pi.current_ma != null ? `${pi.current_ma} mA` : "-- mA";
+    }
+    if (this.piStatTemp) {
+      this.piStatTemp.textContent = pi.temperature_c != null ? `${pi.temperature_c} °C` : "-- °C";
+    }
+    if (this.piStatSource) {
+      this.piStatSource.textContent = pi.source || "--";
+    }
+    if (this.quickPiBatteryText) {
+      this.quickPiBatteryText.textContent = hasPct
+        ? `${pct}%`
+        : (pi.voltage_v != null ? `${pi.voltage_v}V` : "N/A");
     }
   }
 
@@ -1321,6 +1395,9 @@ class RoombaCockpit {
   }
 
   renderHardwareStatus(data) {
+    if (data.pi_battery) {
+      this.renderPiBattery(data.pi_battery);
+    }
     const robot = data.robot || {};
     const cam = data.camera || {};
     const voice = data.voice || {};
@@ -1429,6 +1506,7 @@ class RoombaCockpit {
       });
       const data = await res.json();
       if (data.available) {
+        this._streamActive = false;
         this.log("Camera connected!", "success");
       } else {
         this.log(`Camera not detected: ${data.error}`, "warn");
@@ -1442,6 +1520,7 @@ class RoombaCockpit {
   async enableMockCamera() {
     try {
       await fetch("/api/camera/mock", { method: "POST" });
+      this._streamActive = false;
       this.log("Mock camera simulation enabled.", "info");
       await this.refreshHardwareStatus();
     } catch (err) {
@@ -1509,7 +1588,12 @@ class RoombaCockpit {
       }
       this.log(`Voice CMD "${data.transcript}" -> ${data.reply}`, data.executed ? "success" : "warn");
       if (data.tts && data.tts.browser_fallback && data.reply) {
-        this.playBrowserSpeech(data.reply);
+        if (data.tts.has_wav) {
+          const audio = new Audio(`/api/voice/tts/audio?text=${encodeURIComponent(data.reply)}&t=${Date.now()}`);
+          audio.play().catch(() => this.playBrowserSpeech(data.reply));
+        } else {
+          this.playBrowserSpeech(data.reply);
+        }
       }
     } catch (err) {
       this.log(`Voice command error: ${err.message}`, "error");

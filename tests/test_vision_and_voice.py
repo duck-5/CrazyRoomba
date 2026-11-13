@@ -181,3 +181,54 @@ def test_ui_contains_resilience_vision_and_voice_elements(client):
         "input-stt-command",
     ]:
         assert elem_id in html
+
+
+def test_lifespan_starts_live_vision_and_mock_loops():
+    """Verify configure_startup runs vision and controller loops inside FastAPI's live event loop."""
+    import time
+    from roomba.web.app import configure_startup, startup_options
+
+    prev = dict(startup_options)
+    try:
+        configure_startup(mock=True, init_vision=True)
+        app = create_app()
+        with TestClient(app) as c:
+            time.sleep(0.25)
+            status = c.get("/api/hardware/status").json()
+            assert status["robot"]["connected"] is True
+            assert status["robot"]["is_mock"] is True
+            assert status["camera"]["available"] is True
+            assert status["camera"]["is_mock"] is True
+            assert status["camera"]["frame_count"] >= 1
+            assert status["camera"]["person_detected"] is True
+            assert "target_person" in controller.latest_perception
+    finally:
+        startup_options.update(prev)
+
+
+def test_hog_2d_weights_conversion():
+    """Verify _process_real_frame_sync handles OpenCV (N, 1) 2D weights arrays safely."""
+    import numpy as np
+    from unittest.mock import MagicMock
+    from roomba.perception.vision import VisionService
+
+    vs = VisionService()
+    fake_cv2 = MagicMock()
+    fake_cv2.IMWRITE_JPEG_QUALITY = 1
+    fake_cv2.FONT_HERSHEY_SIMPLEX = 0
+    fake_cv2.resize.side_effect = lambda f, sz: np.zeros((sz[1], sz[0], 3), dtype=np.uint8)
+    fake_cv2.imencode.return_value = (True, np.array([1, 2, 3], dtype=np.uint8))
+
+    fake_hog = MagicMock()
+    fake_hog.detectMultiScale.return_value = (
+        np.array([[40, 20, 80, 160]]),
+        np.array([[1.2]]),  # 2D (N, 1) array as returned by some OpenCV builds
+    )
+    vs._cv2 = fake_cv2
+    vs._hog = fake_hog
+
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    target, jpeg = vs._process_real_frame_sync(frame)
+    assert target is not None
+    assert target["confidence"] > 0.35
+    assert jpeg == b"\x01\x02\x03"

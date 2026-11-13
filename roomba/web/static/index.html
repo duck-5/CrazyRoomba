@@ -175,8 +175,12 @@
       <!-- Mobile Quick Status HUD -->
       <div class="mobile-quick-status" id="mobile-quick-status">
         <div class="quick-stat-chip">
-          <span class="quick-stat-label">BATTERY</span>
+          <span class="quick-stat-label">ROOMBA</span>
           <span id="quick-battery-text" class="quick-stat-val">-- %</span>
+        </div>
+        <div class="quick-stat-chip">
+          <span class="quick-stat-label">PI BATT</span>
+          <span id="quick-pi-battery-text" class="quick-stat-val">-- %</span>
         </div>
         <div class="quick-stat-chip">
           <span class="quick-stat-label">OI MODE</span>
@@ -302,11 +306,32 @@
         <span id="chg-state-badge" class="badge">Not Charging</span>
       </div>
 
-      <!-- Battery Meter -->
+      <!-- Roomba Battery Meter -->
       <div class="battery-meter-container">
+        <div class="battery-meter-header">
+          <span class="battery-meter-label">🤖 ROOMBA BATTERY</span>
+        </div>
         <div class="battery-gauge">
           <div id="battery-fill" class="battery-fill" style="width: 0%;"></div>
           <span id="battery-pct-text" class="battery-pct">-- %</span>
+        </div>
+      </div>
+
+      <!-- Raspberry Pi Battery Meter -->
+      <div class="battery-meter-container pi-battery-container">
+        <div class="battery-meter-header">
+          <span class="battery-meter-label">🍓 RASPBERRY PI BATTERY</span>
+          <span id="pi-chg-state-badge" class="badge">Checking...</span>
+        </div>
+        <div class="battery-gauge">
+          <div id="pi-battery-fill" class="battery-fill" style="width: 0%;"></div>
+          <span id="pi-battery-pct-text" class="battery-pct">-- %</span>
+        </div>
+        <div class="pi-battery-meta">
+          <span id="pi-stat-voltage">-- V</span>
+          <span id="pi-stat-current">-- mA</span>
+          <span id="pi-stat-temp">-- °C</span>
+          <span id="pi-stat-source" class="pi-source-tag">--</span>
         </div>
       </div>
 

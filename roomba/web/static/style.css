@@ -696,6 +696,40 @@ select:focus {
   padding: 12px;
 }
 
+.battery-meter-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.battery-meter-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+}
+
+.pi-battery-container {
+  margin-top: 10px;
+}
+
+.pi-battery-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.pi-source-tag {
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  opacity: 0.8;
+}
+
 .battery-gauge {
   background: #21262d;
   height: 28px;
@@ -723,6 +757,10 @@ select:focus {
 
 .battery-fill.batt-low {
   background: linear-gradient(90deg, #da3633, #f85149);
+}
+
+.battery-fill.batt-na {
+  background: #30363d;
 }
 
 .battery-pct {

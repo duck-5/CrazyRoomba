@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -23,6 +24,26 @@ from roomba.config import config, STATIC_DIR
 logger = logging.getLogger("roomba.web.app")
 
 controller = RobotController()
+
+startup_options: Dict[str, Any] = {
+    "mock": False,
+    "serial_port": None,
+    "auto_connect": False,
+    "init_vision": False,
+}
+
+
+def configure_startup(
+    mock: bool = False,
+    serial_port: Optional[str] = None,
+    auto_connect: bool = False,
+    init_vision: bool = True,
+) -> None:
+    """Configure hardware initialization to run inside FastAPI's live event loop."""
+    startup_options["mock"] = mock
+    startup_options["serial_port"] = serial_port
+    startup_options["auto_connect"] = auto_connect
+    startup_options["init_vision"] = init_vision
 
 
 # --- Pydantic Request Models ---
@@ -101,10 +122,33 @@ class VoiceCommandRequest(BaseModel):
 
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        if startup_options.get("mock"):
+            await controller.connect(mock=True)
+            await controller.vision.initialize(mock=True)
+        else:
+            if startup_options.get("auto_connect"):
+                res = await controller.retry_connect(port=startup_options.get("serial_port"), mock=False)
+                if not res.get("connected"):
+                    logger.warning(f"Auto-connect failed: {res.get('error')}")
+            if startup_options.get("init_vision"):
+                cam_status = await controller.vision.initialize(mock=False)
+                if not cam_status.get("available"):
+                    logger.warning(f"Camera not detected on startup: {cam_status.get('error')}")
+        try:
+            yield
+        finally:
+            await controller.vision.stop()
+            if controller.is_connected:
+                await controller.disconnect()
+
     application = FastAPI(
         title="Roomba 960 Web Control Hub",
         description="Cross-platform Roomba 960 Controller (Raspberry Pi & Windows)",
         version="1.0.0",
+        lifespan=lifespan,
     )
 
     if STATIC_DIR.exists():
@@ -138,11 +182,12 @@ def create_app() -> FastAPI:
             "event_log": controller.event_log[-20:],
             "camera": controller.vision.get_status(),
             "voice": controller.voice.get_status(),
+            "pi_battery": controller.pi_battery.get_status(is_mock=controller.is_mock),
         }
 
     @application.get("/api/hardware/status")
     async def api_hardware_status():
-        """Unified hardware health snapshot (Robot, Camera, Mic, Speakers)."""
+        """Unified hardware health snapshot (Robot, Camera, Mic, Speakers, Pi Battery)."""
         return {
             "robot": {
                 "connected": controller.is_connected,
@@ -152,7 +197,13 @@ def create_app() -> FastAPI:
             },
             "camera": controller.vision.get_status(),
             "voice": controller.voice.get_status(),
+            "pi_battery": controller.pi_battery.get_status(is_mock=controller.is_mock),
         }
+
+    @application.get("/api/pi/battery")
+    async def api_pi_battery():
+        """Return Raspberry Pi battery / UPS / PMIC power telemetry."""
+        return controller.pi_battery.get_status(is_mock=controller.is_mock)
 
     @application.post("/api/hardware/retry")
     async def api_hardware_retry():

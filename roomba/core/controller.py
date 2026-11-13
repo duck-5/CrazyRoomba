@@ -31,6 +31,7 @@ from roomba.modes.follow_person import FollowPersonMode
 from roomba.perception.mapping import OccupancyGrid
 from roomba.perception.vision import VisionService
 from roomba.voice.service import VoiceService
+from roomba.core.pi_battery import PiBatteryMonitor
 from roomba.config import config
 
 logger = logging.getLogger("roomba.core.controller")
@@ -62,6 +63,9 @@ class RobotController:
         self.mode_manager = ModeManager(self)
         self.behavior_manager = self.mode_manager
         self._init_modes()
+
+        # Raspberry Pi Battery / Power Monitor
+        self.pi_battery = PiBatteryMonitor()
 
         # Cached latest telemetry snapshot & perceptions
         self.latest_telemetry: Dict[str, Any] = self._empty_telemetry()
@@ -137,6 +141,7 @@ class RobotController:
                 "left": 0,
                 "right": 0,
             },
+            "pi_battery": self.pi_battery.get_status(is_mock=self.is_mock),
             "timestamp": time.time(),
         }
 
@@ -581,6 +586,7 @@ class RobotController:
         t["port"] = self.port
         t["active_mode"] = self.mode_manager.active_name
         t["active_behavior"] = self.behavior_manager.active_name
+        t["pi_battery"] = self.pi_battery.get_status(is_mock=self.is_mock)
         t["timestamp"] = time.time()
 
     # --- WebSocket Broadcasting ---

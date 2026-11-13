@@ -108,7 +108,7 @@ class TTSEngine:
             if exe:
                 try:
                     proc = subprocess.run(
-                        [exe, "--stdout", "-v", "en", "-s", str(rate), clean_text],
+                        [exe, "--stdout", "-v", "en", "-s", str(rate), "--", clean_text],
                         capture_output=True,
                         timeout=10.0,
                     )

@@ -212,7 +212,11 @@ class VisionService:
             best_conf = 0.0
             best_box = None
             for idx, (rx, ry, rw, rh) in enumerate(rects):
-                weight = float(weights[idx]) if idx < len(weights) else 0.5
+                if idx < len(weights):
+                    raw_w = weights[idx]
+                    weight = float(raw_w.item()) if hasattr(raw_w, "item") else float(raw_w)
+                else:
+                    weight = 0.5
                 # Map HOG SVM score to ~0..1 confidence
                 conf = min(1.0, max(0.0, weight / 1.5))
                 if conf > 0.35 and conf > best_conf:

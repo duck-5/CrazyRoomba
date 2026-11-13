@@ -7,7 +7,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 from pathlib import Path
 
@@ -17,7 +16,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import uvicorn
-from roomba.web.app import app, controller
+from roomba.web.app import app, controller, configure_startup
 from roomba.config import config
 
 
@@ -31,23 +30,12 @@ def run_web_server(
 ) -> None:
     """Run the Roomba web hub."""
     controller.default_mode = mode
-
-    if mock:
-        asyncio.run(controller.connect(mock=True))
-        asyncio.run(controller.vision.initialize(mock=True))
-    else:
-        if auto_connect:
-            try:
-                asyncio.run(controller.connect(port=serial_port, mock=False))
-            except Exception as e:
-                controller.last_error = str(e)
-                print(f"[!] Warning: Auto-connect failed: {e}")
-                print("   You can connect anytime via the Web Cockpit.")
-        # Probe camera on startup without collapsing if not detected
-        cam_status = asyncio.run(controller.vision.initialize(mock=False))
-        if not cam_status.get("available"):
-            print(f"[!] Warning: Camera not detected: {cam_status.get('error')}")
-            print("   Server will continue running; use 'Try Again' in the Web Cockpit.")
+    configure_startup(
+        mock=mock,
+        serial_port=serial_port,
+        auto_connect=auto_connect,
+        init_vision=True,
+    )
 
     print("=" * 65)
     print("      ROOMBA 960 MODULAR CONTROLLER & COCKPIT")

@@ -82,6 +82,8 @@ class OpenCVCameraSource(BaseCameraSource):
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
             if not self.cap.isOpened():
                 logger.error(f"Failed to open OpenCV camera at index {self.device_index}")
+                self.cap.release()
+                self.cap = None
                 return False
             self.is_open = True
             logger.info(f"OpenCVCameraSource opened (index={self.device_index})")
