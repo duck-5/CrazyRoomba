@@ -232,3 +232,54 @@ def test_hog_2d_weights_conversion():
     assert target is not None
     assert target["confidence"] > 0.35
     assert jpeg == b"\x01\x02\x03"
+
+
+def test_camera_auto_scan_skips_pi_internal_nodes(monkeypatch):
+    """OpenCVCameraSource should auto-scan /dev/video* and find USB camera on non-zero index."""
+    import asyncio
+    import sys
+    import numpy as np
+    from unittest.mock import MagicMock
+    from roomba.perception import camera as cam_mod
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        cam_mod,
+        "discover_video_devices",
+        lambda: [
+            {"index": 0, "path": "/dev/video0", "name": "rp1-cfe-csi2-ch0", "is_pi_internal": True},
+            {"index": 1, "path": "/dev/video1", "name": "pispbe-output", "is_pi_internal": True},
+            {"index": 8, "path": "/dev/video8", "name": "HD USB Camera: HD USB Camera", "is_pi_internal": False},
+        ],
+    )
+
+    fake_cap_bad = MagicMock()
+    fake_cap_bad.isOpened.return_value = False
+
+    fake_cap_good = MagicMock()
+    fake_cap_good.isOpened.return_value = True
+    fake_cap_good.read.return_value = (True, np.zeros((480, 640, 3), dtype=np.uint8))
+
+    def fake_videocapture(target, *args, **kwargs):
+        if target == "/dev/video8":
+            return fake_cap_good
+        return fake_cap_bad
+
+    fake_cv2 = MagicMock()
+    fake_cv2.CAP_V4L2 = 200
+    fake_cv2.CAP_ANY = 0
+    fake_cv2.CAP_PROP_FOURCC = 6
+    fake_cv2.CAP_PROP_FRAME_WIDTH = 3
+    fake_cv2.CAP_PROP_FRAME_HEIGHT = 4
+    fake_cv2.VideoWriter_fourcc.return_value = 1196444237
+    fake_cv2.VideoCapture.side_effect = fake_videocapture
+
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+
+    src = cam_mod.OpenCVCameraSource(device_index=0, auto_scan=True)
+    ok = asyncio.run(src.open())
+    assert ok is True
+    assert src.device_index == 8
+    assert src.device_path == "/dev/video8"
+    assert src.backend_name == "opencv-v4l2"
+    asyncio.run(src.close())

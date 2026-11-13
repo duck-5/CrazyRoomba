@@ -15,7 +15,14 @@ import math
 import time
 from typing import Optional, Dict, Any, Tuple
 
-from roomba.perception.camera import BaseCameraSource, OpenCVCameraSource, MockCameraSource
+from roomba.perception.camera import (
+    BaseCameraSource,
+    OpenCVCameraSource,
+    MockCameraSource,
+    Picamera2CameraSource,
+    LibcameraCLISource,
+    discover_video_devices,
+)
 from roomba.config import config
 
 logger = logging.getLogger("roomba.perception.vision")
@@ -27,6 +34,8 @@ class VisionService:
     def __init__(self, controller: Any = None, device_index: Optional[int] = None):
         self.controller = controller
         self.device_index: int = config.camera_device_index if device_index is None else device_index
+        self.device_path: Optional[str] = None
+        self.camera_backend: str = "none"
 
         self.camera: Optional[BaseCameraSource] = None
         self.is_mock: bool = False
@@ -55,15 +64,23 @@ class VisionService:
             "status": self.status,
             "is_mock": self.is_mock,
             "device_index": self.device_index,
+            "device_path": self.device_path,
+            "camera_backend": self.camera_backend,
             "detector_backend": self.detector_backend,
             "error": self.error,
             "person_detected": self.person_detected,
             "target_person": self.target_person,
             "fps": round(self.fps, 1),
             "frame_count": self.frame_count,
+            "devices": discover_video_devices(),
         }
 
-    async def initialize(self, mock: bool = False, device_index: Optional[int] = None) -> Dict[str, Any]:
+    async def initialize(
+        self,
+        mock: bool = False,
+        device_index: Optional[int] = None,
+        device_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Safely initialize camera and person detector.
         Never raises on missing hardware or missing OpenCV; records error state instead.
@@ -72,6 +89,8 @@ class VisionService:
 
         if device_index is not None:
             self.device_index = device_index
+        self.device_path = device_path
+        self.camera_backend = "none"
 
         self.is_mock = mock
         self.error = None
@@ -93,6 +112,7 @@ class VisionService:
                 self._cv2 = None
             self.available = True
             self.status = "mock"
+            self.camera_backend = "mock"
             self.detector_backend = "mock"
             self.error = None
             self._start_loop()
@@ -114,24 +134,63 @@ class VisionService:
                 self.controller.log_event("warn", f"Camera unavailable: {self.error}")
             return self.get_status()
 
-        cam = OpenCVCameraSource(device_index=self.device_index, width=640, height=480)
-        opened = False
-        try:
-            opened = await cam.open()
-        except Exception as e:
-            logger.warning(f"Camera open exception: {e}")
-            opened = False
+        # Try 1: OpenCV V4L2 (auto-scans /dev/video* and skips Pi ISP/codec nodes)
+        # Try 2: Picamera2 (Pi 5 CSI camera native Python bindings)
+        # Try 3: rpicam-vid / libcamera-vid MJPEG stream (Pi 5 CSI CLI fallback)
+        candidates = [
+            OpenCVCameraSource(
+                device_index=self.device_index,
+                width=640,
+                height=480,
+                device_path=device_path,
+                auto_scan=(device_path is None),
+            ),
+            Picamera2CameraSource(device_index=self.device_index, width=640, height=480),
+            LibcameraCLISource(device_index=self.device_index, width=640, height=480),
+        ]
 
-        if not opened:
+        cam: Optional[BaseCameraSource] = None
+        for candidate in candidates:
+            try:
+                if await candidate.open():
+                    cam = candidate
+                    break
+            except Exception as e:
+                logger.debug(f"Camera candidate {candidate.__class__.__name__} failed: {e}")
+
+        if cam is None:
             self.camera = None
             self.available = False
             self.status = "error"
             self.detector_backend = "none"
-            self.error = f"No camera detected at index {self.device_index}. Connect USB/Pi camera and click Try Again."
+            discovered = discover_video_devices()
+            if discovered:
+                names = ", ".join(f"{d['path']}({d['name']})" for d in discovered[:6])
+                only_internal = all(d["is_pi_internal"] for d in discovered)
+                if only_internal and LibcameraCLISource.find_cli() is None:
+                    self.error = (
+                        f"Only Pi internal ISP/CSI nodes found ({names}), and rpicam-vid/picamera2 "
+                        "is unavailable inside this environment. Install rpicam-apps/libcamera or connect a USB webcam, then click Try Again."
+                    )
+                else:
+                    self.error = (
+                        f"Camera devices found ({names}) but none produced frames. "
+                        "Ensure no other app holds the camera, then click Try Again."
+                    )
+            else:
+                self.error = (
+                    f"No camera detected (index={self.device_index}, no /dev/video* nodes). "
+                    "Connect USB/Pi camera and click Try Again."
+                )
             logger.warning(self.error)
             if self.controller:
                 self.controller.log_event("warn", self.error)
             return self.get_status()
+
+        # Update resolved device index/path/backend
+        self.device_index = cam.device_index
+        self.device_path = cam.device_path
+        self.camera_backend = cam.backend_name
 
         # Initialize built-in OpenCV HOG person detector (works offline, zero extra weights)
         try:
@@ -150,12 +209,20 @@ class VisionService:
         self.error = None
         self._start_loop()
         if self.controller:
-            self.controller.log_event("success", f"Camera connected (index={self.device_index}, detector={self.detector_backend})")
+            self.controller.log_event(
+                "success",
+                f"Camera connected ({self.camera_backend}, {self.device_path or self.device_index}, detector={self.detector_backend})",
+            )
         return self.get_status()
 
-    async def retry(self, mock: bool = False, device_index: Optional[int] = None) -> Dict[str, Any]:
+    async def retry(
+        self,
+        mock: bool = False,
+        device_index: Optional[int] = None,
+        device_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Re-probe and attempt to initialize the camera."""
-        return await self.initialize(mock=mock, device_index=device_index)
+        return await self.initialize(mock=mock, device_index=device_index, device_path=device_path)
 
     def _start_loop(self) -> None:
         if self._loop_task is None or self._loop_task.done():
