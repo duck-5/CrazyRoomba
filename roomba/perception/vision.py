@@ -300,6 +300,10 @@ class VisionService:
             if not proto.exists():
                 logger.info("Downloading MobileNetSSD_deploy.prototxt...")
                 urllib.request.urlretrieve(_MOBILENET_PROTOTXT_URL, str(proto))
+                # Lower Caffe DetectionOutput threshold so low-confidence poses aren't dropped before Python
+                txt = proto.read_text(encoding="utf-8", errors="ignore")
+                if "confidence_threshold: 0.25" in txt:
+                    proto.write_text(txt.replace("confidence_threshold: 0.25", "confidence_threshold: 0.05"), encoding="utf-8")
             if not model.exists() or model.stat().st_size < 1_000_000:
                 logger.info("Downloading mobilenet_iter_73000.caffemodel (~23MB)...")
                 urllib.request.urlretrieve(_MOBILENET_MODEL_URL, str(model))
@@ -368,7 +372,7 @@ class VisionService:
                 if class_id == _MOBILENET_PERSON_CLASS_ID:
                     if conf > raw_best_person_conf:
                         raw_best_person_conf = conf
-                    if conf > 0.20 and conf > best_conf:
+                    if conf > 0.15 and conf > best_conf:
                         x1 = max(0, int(detections[0, 0, i, 3] * w))
                         y1 = max(0, int(detections[0, 0, i, 4] * h))
                         x2 = min(w, int(detections[0, 0, i, 5] * w))

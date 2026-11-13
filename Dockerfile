@@ -70,6 +70,7 @@ RUN pip install --upgrade pip setuptools wheel && \
 # 5. Pre-download MobileNet-SSD person detection model (~23MB) for fast Pi 5 CPU inference
 RUN mkdir -p /app/models && \
     curl -fsSL "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/voc/MobileNetSSD_deploy.prototxt" -o /app/models/MobileNetSSD_deploy.prototxt && \
+    sed -i 's/confidence_threshold: 0.25/confidence_threshold: 0.05/' /app/models/MobileNetSSD_deploy.prototxt && \
     curl -fsSL "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/mobilenet_iter_73000.caffemodel" -o /app/models/mobilenet_iter_73000.caffemodel
 
 # 6. Copy project source code
