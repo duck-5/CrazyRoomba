@@ -86,8 +86,8 @@ class OpenCVCameraSource(BaseCameraSource):
             self.is_open = True
             logger.info(f"OpenCVCameraSource opened (index={self.device_index})")
             return True
-        except ImportError:
-            logger.error("cv2 module not found. Please install opencv-python.")
+        except Exception as e:
+            logger.error(f"cv2 failed to load or open camera: {e}")
             return False
 
     async def read_frame(self) -> Optional[Any]:

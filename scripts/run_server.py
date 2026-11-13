@@ -34,12 +34,20 @@ def run_web_server(
 
     if mock:
         asyncio.run(controller.connect(mock=True))
-    elif auto_connect:
-        try:
-            asyncio.run(controller.connect(port=serial_port, mock=False))
-        except Exception as e:
-            print(f"[!] Warning: Auto-connect failed: {e}")
-            print("   You can connect anytime via the Web Cockpit.")
+        asyncio.run(controller.vision.initialize(mock=True))
+    else:
+        if auto_connect:
+            try:
+                asyncio.run(controller.connect(port=serial_port, mock=False))
+            except Exception as e:
+                controller.last_error = str(e)
+                print(f"[!] Warning: Auto-connect failed: {e}")
+                print("   You can connect anytime via the Web Cockpit.")
+        # Probe camera on startup without collapsing if not detected
+        cam_status = asyncio.run(controller.vision.initialize(mock=False))
+        if not cam_status.get("available"):
+            print(f"[!] Warning: Camera not detected: {cam_status.get('error')}")
+            print("   Server will continue running; use 'Try Again' in the Web Cockpit.")
 
     print("=" * 65)
     print("      ROOMBA 960 MODULAR CONTROLLER & COCKPIT")

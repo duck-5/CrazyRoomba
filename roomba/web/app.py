@@ -6,12 +6,13 @@ mode control, ARM/DISARM, and pluggable autonomous behaviors.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, UploadFile, File, Form
+from fastapi.responses import HTMLResponse, FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -77,6 +78,27 @@ class SoundMarkRequest(BaseModel):
     mark: str = Field(..., description="Sound mark name: startup, shutdown, dock_success, clean_done, obstacle_alert, cliff_warning, low_battery, ack, nack, reverse_beep, happy, sad")
 
 
+class ModeScriptRequest(BaseModel):
+    mode: str = Field(..., description="Operating mode name: manual, wander, follow_person")
+
+
+class CameraRetryRequest(BaseModel):
+    device_index: Optional[int] = None
+    mock: bool = False
+
+
+class TTSRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=500, description="English text to speak")
+    rate: int = Field(165, ge=80, le=300, description="Speech rate in WPM")
+    play_on_speaker: bool = True
+
+
+class VoiceCommandRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=500, description="English voice transcript or command")
+    execute: bool = True
+    speak_reply: bool = True
+
+
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
     application = FastAPI(
@@ -102,18 +124,57 @@ def create_app() -> FastAPI:
 
     @application.get("/api/status")
     async def api_status():
-        """Current robot status, armed state, telemetry, and active behavior."""
+        """Current robot status, armed state, telemetry, active behavior, camera & voice health."""
         return {
             "connected": controller.is_connected,
             "port": controller.port,
             "is_mock": controller.is_mock,
+            "last_error": controller.last_error,
             "armed": controller.armed,
             "is_driving": controller.is_driving,
             "mode": controller.client.mode if controller.client else "Off",
             "active_behavior": controller.behavior_manager.active_name,
             "telemetry": controller.latest_telemetry,
             "event_log": controller.event_log[-20:],
+            "camera": controller.vision.get_status(),
+            "voice": controller.voice.get_status(),
         }
+
+    @application.get("/api/hardware/status")
+    async def api_hardware_status():
+        """Unified hardware health snapshot (Robot, Camera, Mic, Speakers)."""
+        return {
+            "robot": {
+                "connected": controller.is_connected,
+                "port": controller.port,
+                "is_mock": controller.is_mock,
+                "error": controller.last_error if not controller.is_connected else None,
+            },
+            "camera": controller.vision.get_status(),
+            "voice": controller.voice.get_status(),
+        }
+
+    @application.post("/api/hardware/retry")
+    async def api_hardware_retry():
+        """Re-probe Robot serial, Camera, and Audio (Mic/Speaker) hardware."""
+        robot_res = await controller.retry_connect() if not controller.is_connected else {
+            "connected": True,
+            "port": controller.port,
+            "is_mock": controller.is_mock,
+            "error": None,
+        }
+        cam_res = await controller.vision.retry()
+        voice_res = controller.voice.retry()
+        return {
+            "robot": robot_res,
+            "camera": cam_res,
+            "voice": voice_res,
+        }
+
+    @application.post("/api/robot/retry")
+    async def api_robot_retry():
+        """Safely retry Roomba serial auto-detection and connection without crashing."""
+        return await controller.retry_connect()
 
     @application.get("/api/map")
     async def api_map():
@@ -212,6 +273,122 @@ def create_app() -> FastAPI:
         active_mode = controller.mode_manager.active_name
         is_active = active_mode in ["follow_person", "map_mode"]
         return {"vision_active": is_active, "mode": active_mode}
+
+    # --- Camera & Person Vision Endpoints ---
+
+    @application.get("/api/camera/status")
+    async def api_camera_status():
+        """Return camera connection status, error message, and person detection state."""
+        return controller.vision.get_status()
+
+    @application.post("/api/camera/retry")
+    async def api_camera_retry(req: Optional[CameraRetryRequest] = None):
+        """Re-probe and re-open the camera without crashing if unavailable."""
+        device_idx = req.device_index if req else None
+        mock = req.mock if req else False
+        return await controller.vision.retry(mock=mock, device_index=device_idx)
+
+    @application.post("/api/camera/mock")
+    async def api_camera_mock():
+        """Enable simulated mock camera with moving person detection."""
+        return await controller.vision.initialize(mock=True)
+
+    @application.post("/api/camera/stop")
+    async def api_camera_stop():
+        """Stop camera capture and release resources."""
+        await controller.vision.stop()
+        return controller.vision.get_status()
+
+    @application.get("/api/camera/snapshot")
+    async def api_camera_snapshot():
+        """Return a single annotated JPEG frame from the camera."""
+        jpeg = controller.vision.get_latest_jpeg()
+        if jpeg is None:
+            raise HTTPException(
+                status_code=503,
+                detail=controller.vision.error or "Camera frame unavailable.",
+            )
+        return Response(content=jpeg, media_type="image/jpeg")
+
+    @application.get("/api/camera/stream")
+    async def api_camera_stream():
+        """Live MJPEG video stream with person detection bounding box overlay."""
+        if not controller.vision.available:
+            raise HTTPException(
+                status_code=503,
+                detail=controller.vision.error or "Camera not detected.",
+            )
+
+        async def frame_generator():
+            while controller.vision.available:
+                jpeg = controller.vision.get_latest_jpeg()
+                if jpeg is not None:
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                    )
+                await asyncio.sleep(0.08)
+
+        return StreamingResponse(
+            frame_generator(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+        )
+
+    # --- English Voice (TTS & STT) Endpoints ---
+
+    @application.get("/api/voice/status")
+    async def api_voice_status():
+        """Return English TTS/STT engine and microphone/speaker hardware status."""
+        return controller.voice.get_status()
+
+    @application.post("/api/voice/retry")
+    async def api_voice_retry():
+        """Re-probe microphone and speaker hardware without crashing."""
+        return controller.voice.retry()
+
+    @application.post("/api/voice/tts")
+    async def api_voice_tts(req: TTSRequest):
+        """Speak English text on Pi speakers (if connected) and/or provide browser audio."""
+        res = await controller.voice.speak(
+            req.text,
+            rate=req.rate,
+            play_on_speaker=req.play_on_speaker,
+        )
+        return res
+
+    @application.get("/api/voice/tts/audio")
+    async def api_voice_tts_audio(text: str, rate: int = 165):
+        """Synthesize English text to WAV audio for browser playback."""
+        wav_bytes = await controller.voice.synthesize_wav(text, rate=rate)
+        if wav_bytes is None:
+            raise HTTPException(
+                status_code=501,
+                detail="No server-side WAV TTS engine (espeak-ng/pyttsx3) installed. Use browser speechSynthesis fallback.",
+            )
+        return Response(content=wav_bytes, media_type="audio/wav")
+
+    @application.post("/api/voice/command")
+    async def api_voice_command(req: VoiceCommandRequest):
+        """Process an English voice transcript, execute matched Roomba command, and return reply."""
+        return await controller.voice.process_command_text(
+            req.text,
+            execute=req.execute,
+            speak_reply=req.speak_reply,
+        )
+
+    @application.post("/api/voice/stt")
+    async def api_voice_stt(
+        audio: UploadFile = File(...),
+        execute: bool = Form(True),
+        speak_reply: bool = Form(True),
+    ):
+        """Transcribe uploaded English WAV audio and optionally execute Roomba command."""
+        wav_bytes = await audio.read()
+        return await controller.voice.process_audio_wav(
+            wav_bytes,
+            execute=execute,
+            speak_reply=speak_reply,
+        )
 
     # --- Drive Endpoints ---
 

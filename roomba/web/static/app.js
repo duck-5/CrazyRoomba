@@ -40,6 +40,7 @@ class RoombaCockpit {
     this.bindEvents();
     this.scanPorts();
     this.connectWebSocket();
+    this.initVisionAndVoice();
   }
 
   initElements() {
@@ -1227,6 +1228,330 @@ class RoombaCockpit {
     } catch (err) {
       this.log(`Behavior error: ${err.message}`, "error");
     }
+  }
+
+  // =========================================================================
+  // Hardware Resilience, Camera Person Vision, & English Voice (TTS / STT)
+  // =========================================================================
+
+  initVisionAndVoice() {
+    this.hwAlertBanner = document.getElementById("hardware-alert-banner");
+    this.hwAlertItems = document.getElementById("hardware-alert-items");
+    this.btnRetryAllHw = document.getElementById("btn-retry-all-hw");
+
+    this.cameraStatusBadge = document.getElementById("camera-status-badge");
+    this.cameraErrorBox = document.getElementById("camera-error-box");
+    this.cameraErrorText = document.getElementById("camera-error-text");
+    this.btnRetryCamera = document.getElementById("btn-retry-camera");
+    this.btnMockCamera = document.getElementById("btn-mock-camera");
+    this.btnRefreshCamera = document.getElementById("btn-refresh-camera");
+    this.cameraFeedBox = document.getElementById("camera-feed-box");
+    this.cameraStreamImg = document.getElementById("camera-stream-img");
+    this.personDetectBadge = document.getElementById("person-detect-badge");
+    this.cameraFpsText = document.getElementById("camera-fps-text");
+    this.btnToggleFollow = document.getElementById("btn-toggle-follow");
+
+    this.btnRetryVoice = document.getElementById("btn-retry-voice");
+    this.speakerStatusPill = document.getElementById("speaker-status-pill");
+    this.micStatusPill = document.getElementById("mic-status-pill");
+    this.inputTtsText = document.getElementById("input-tts-text");
+    this.btnSpeakTts = document.getElementById("btn-speak-tts");
+    this.btnBrowserStt = document.getElementById("btn-browser-stt");
+    this.inputSttCommand = document.getElementById("input-stt-command");
+    this.btnSendVoiceCmd = document.getElementById("btn-send-voice-cmd");
+    this.voiceReplyBox = document.getElementById("voice-reply-box");
+
+    this._streamActive = false;
+
+    if (this.btnRetryAllHw) {
+      this.btnRetryAllHw.addEventListener("click", () => this.retryAllHardware());
+    }
+    if (this.btnRetryCamera) {
+      this.btnRetryCamera.addEventListener("click", () => this.retryCamera());
+    }
+    if (this.btnRefreshCamera) {
+      this.btnRefreshCamera.addEventListener("click", () => this.retryCamera());
+    }
+    if (this.btnMockCamera) {
+      this.btnMockCamera.addEventListener("click", () => this.enableMockCamera());
+    }
+    if (this.btnToggleFollow) {
+      this.btnToggleFollow.addEventListener("click", () => {
+        const isFollowing = document.querySelector('.btn-behavior[data-behavior="follow_person"]')?.classList.contains("active-behavior");
+        this.setBehavior(isFollowing ? "manual" : "follow_person");
+      });
+    }
+    if (this.btnRetryVoice) {
+      this.btnRetryVoice.addEventListener("click", () => this.retryVoice());
+    }
+    if (this.btnSpeakTts) {
+      this.btnSpeakTts.addEventListener("click", () => this.speakTTS());
+    }
+    if (this.btnSendVoiceCmd) {
+      this.btnSendVoiceCmd.addEventListener("click", () => {
+        const cmd = this.inputSttCommand ? this.inputSttCommand.value.trim() : "";
+        if (cmd) this.sendVoiceCommand(cmd);
+      });
+    }
+    if (this.inputSttCommand) {
+      this.inputSttCommand.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          const cmd = this.inputSttCommand.value.trim();
+          if (cmd) this.sendVoiceCommand(cmd);
+        }
+      });
+    }
+    if (this.btnBrowserStt) {
+      this.btnBrowserStt.addEventListener("click", () => this.startBrowserSTT());
+    }
+
+    this.refreshHardwareStatus();
+    setInterval(() => this.refreshHardwareStatus(), 3000);
+  }
+
+  async refreshHardwareStatus() {
+    try {
+      const res = await fetch("/api/hardware/status");
+      if (!res.ok) return;
+      const data = await res.json();
+      this.renderHardwareStatus(data);
+    } catch (_) {
+      // Server temporarily unreachable; keep UI alive
+    }
+  }
+
+  renderHardwareStatus(data) {
+    const robot = data.robot || {};
+    const cam = data.camera || {};
+    const voice = data.voice || {};
+    const tts = voice.tts || {};
+    const stt = voice.stt || {};
+
+    // 1. Unified Hardware Alert Banner
+    const alerts = [];
+    if (!robot.connected) {
+      const msg = robot.error || "Roomba not connected";
+      alerts.push(`<span class="hw-alert-chip">🤖 Robot: ${this._escapeHtml(msg)}</span>`);
+    }
+    if (!cam.available) {
+      const msg = cam.error || "Camera not detected";
+      alerts.push(`<span class="hw-alert-chip">📷 Camera: ${this._escapeHtml(msg)}</span>`);
+    }
+    if (!tts.speaker_available) {
+      alerts.push(`<span class="hw-alert-chip hw-warn">🔊 Speakers: Not connected (Browser TTS active)</span>`);
+    }
+    if (!stt.mic_available) {
+      alerts.push(`<span class="hw-alert-chip hw-warn">🎤 Mic: Not connected (Browser Mic STT active)</span>`);
+    }
+
+    if (this.hwAlertBanner && this.hwAlertItems) {
+      if (alerts.length > 0) {
+        this.hwAlertItems.innerHTML = alerts.join("");
+        this.hwAlertBanner.style.display = "flex";
+      } else {
+        this.hwAlertBanner.style.display = "none";
+      }
+    }
+
+    // 2. Camera Panel
+    if (this.cameraStatusBadge) {
+      if (cam.available) {
+        this.cameraStatusBadge.textContent = cam.is_mock ? "MOCK CAM" : "CONNECTED";
+        this.cameraStatusBadge.className = "badge badge-success";
+      } else {
+        this.cameraStatusBadge.textContent = "NOT DETECTED";
+        this.cameraStatusBadge.className = "badge badge-danger";
+      }
+    }
+
+    if (cam.available) {
+      if (this.cameraErrorBox) this.cameraErrorBox.style.display = "none";
+      if (this.cameraFeedBox) this.cameraFeedBox.style.display = "flex";
+      if (this.cameraStreamImg && !this._streamActive) {
+        this.cameraStreamImg.src = `/api/camera/stream?t=${Date.now()}`;
+        this._streamActive = true;
+      }
+      if (this.personDetectBadge) {
+        if (cam.person_detected && cam.target_person) {
+          const pct = Math.round((cam.target_person.confidence || 0) * 100);
+          this.personDetectBadge.textContent = `PERSON DETECTED (${pct}%)`;
+          this.personDetectBadge.className = "badge badge-success";
+        } else {
+          this.personDetectBadge.textContent = "NO PERSON";
+          this.personDetectBadge.className = "badge";
+        }
+      }
+      if (this.cameraFpsText) {
+        this.cameraFpsText.textContent = `${cam.fps || 0} FPS (${cam.detector_backend || "none"})`;
+      }
+    } else {
+      this._streamActive = false;
+      if (this.cameraStreamImg) this.cameraStreamImg.removeAttribute("src");
+      if (this.cameraFeedBox) this.cameraFeedBox.style.display = "none";
+      if (this.cameraErrorBox) this.cameraErrorBox.style.display = "flex";
+      if (this.cameraErrorText) {
+        this.cameraErrorText.textContent = cam.error || "No camera detected. Connect camera and click Try Again.";
+      }
+    }
+
+    // 3. Voice Hardware Pills
+    if (this.speakerStatusPill) {
+      this.speakerStatusPill.textContent = tts.speaker_available ? `SPEAKER: OK (${tts.engine})` : `SPEAKER: NONE (Browser Fallback)`;
+      this.speakerStatusPill.className = tts.speaker_available ? "pill pill-active" : "pill";
+    }
+    if (this.micStatusPill) {
+      this.micStatusPill.textContent = stt.mic_available ? `MIC: OK (${stt.engine})` : `MIC: NONE (Browser Fallback)`;
+      this.micStatusPill.className = stt.mic_available ? "pill pill-active" : "pill";
+    }
+  }
+
+  async retryAllHardware() {
+    this.log("Retrying all hardware (Robot, Camera, Audio)...", "info");
+    try {
+      const res = await fetch("/api/hardware/retry", { method: "POST" });
+      if (res.ok) {
+        await this.refreshHardwareStatus();
+        await this.scanPorts();
+        this.log("Hardware re-probe complete.", "info");
+      }
+    } catch (err) {
+      this.log(`Hardware retry failed: ${err.message}`, "error");
+    }
+  }
+
+  async retryCamera() {
+    this.log("Retrying camera detection...", "info");
+    try {
+      const res = await fetch("/api/camera/retry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mock: false }),
+      });
+      const data = await res.json();
+      if (data.available) {
+        this.log("Camera connected!", "success");
+      } else {
+        this.log(`Camera not detected: ${data.error}`, "warn");
+      }
+      await this.refreshHardwareStatus();
+    } catch (err) {
+      this.log(`Camera retry error: ${err.message}`, "error");
+    }
+  }
+
+  async enableMockCamera() {
+    try {
+      await fetch("/api/camera/mock", { method: "POST" });
+      this.log("Mock camera simulation enabled.", "info");
+      await this.refreshHardwareStatus();
+    } catch (err) {
+      this.log(`Mock camera error: ${err.message}`, "error");
+    }
+  }
+
+  async retryVoice() {
+    this.log("Re-probing microphone & speakers...", "info");
+    try {
+      await fetch("/api/voice/retry", { method: "POST" });
+      await this.refreshHardwareStatus();
+    } catch (err) {
+      this.log(`Audio retry error: ${err.message}`, "error");
+    }
+  }
+
+  playBrowserSpeech(text) {
+    if ("speechSynthesis" in window && text) {
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = "en-US";
+      utter.rate = 1.0;
+      window.speechSynthesis.speak(utter);
+    }
+  }
+
+  async speakTTS(customText = null) {
+    const text = customText || (this.inputTtsText ? this.inputTtsText.value.trim() : "");
+    if (!text) return;
+    try {
+      const res = await fetch("/api/voice/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, play_on_speaker: true }),
+      });
+      const data = await res.json();
+      if (this.voiceReplyBox) {
+        this.voiceReplyBox.textContent = `TTS (${data.engine}): "${text}"`;
+      }
+      if (data.browser_fallback) {
+        if (data.has_wav) {
+          const audio = new Audio(`/api/voice/tts/audio?text=${encodeURIComponent(text)}&t=${Date.now()}`);
+          audio.play().catch(() => this.playBrowserSpeech(text));
+        } else {
+          this.playBrowserSpeech(text);
+        }
+      }
+    } catch (err) {
+      this.log(`TTS error: ${err.message}`, "error");
+      this.playBrowserSpeech(text);
+    }
+  }
+
+  async sendVoiceCommand(text) {
+    try {
+      const res = await fetch("/api/voice/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, execute: true, speak_reply: true }),
+      });
+      const data = await res.json();
+      if (this.voiceReplyBox) {
+        this.voiceReplyBox.textContent = `Heard: "${data.transcript}" → ${data.reply}`;
+      }
+      this.log(`Voice CMD "${data.transcript}" -> ${data.reply}`, data.executed ? "success" : "warn");
+      if (data.tts && data.tts.browser_fallback && data.reply) {
+        this.playBrowserSpeech(data.reply);
+      }
+    } catch (err) {
+      this.log(`Voice command error: ${err.message}`, "error");
+    }
+  }
+
+  startBrowserSTT() {
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRec) {
+      const msg = "Browser Web Speech API not supported here. Type a command in the box instead.";
+      if (this.voiceReplyBox) this.voiceReplyBox.textContent = msg;
+      this.log(msg, "warn");
+      return;
+    }
+    const recognition = new SpeechRec();
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    if (this.btnBrowserStt) this.btnBrowserStt.textContent = "🎤 Listening...";
+    if (this.voiceReplyBox) this.voiceReplyBox.textContent = "Listening for English voice command...";
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      if (this.inputSttCommand) this.inputSttCommand.value = transcript;
+      this.sendVoiceCommand(transcript);
+    };
+    recognition.onerror = (event) => {
+      if (this.voiceReplyBox) this.voiceReplyBox.textContent = `Mic listen error: ${event.error}`;
+    };
+    recognition.onend = () => {
+      if (this.btnBrowserStt) this.btnBrowserStt.textContent = "🎤 Listen (Browser Mic)";
+    };
+    recognition.start();
+  }
+
+  _escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
   }
 }
 

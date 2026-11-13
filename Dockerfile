@@ -33,15 +33,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     v4l-utils \
     libgl1 \
     libglib2.0-0 \
+    espeak-ng \
+    alsa-utils \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Setup non-root application user with hardware serial and video access
+# 2. Setup non-root application user with hardware serial, video, and audio access
 # - dialout group: Grants access to /dev/ttyACM*, /dev/ttyUSB*, and /dev/serial/by-id/*
 # - video group: Grants access to /dev/video* camera streams
+# - audio group: Grants access to /dev/snd/* audio devices
 RUN groupadd -f -g 20 dialout && \
     groupadd -f -g 44 video && \
-    useradd -m -s /bin/bash -u 1000 -G dialout,video roomba
+    groupadd -f -g 29 audio && \
+    useradd -m -s /bin/bash -u 1000 -G dialout,video,audio roomba
 
 # 3. Working directory setup
 WORKDIR /app

@@ -29,6 +29,8 @@ from roomba.modes.manual import ManualMode
 from roomba.modes.wander import WanderMode
 from roomba.modes.follow_person import FollowPersonMode
 from roomba.perception.mapping import OccupancyGrid
+from roomba.perception.vision import VisionService
+from roomba.voice.service import VoiceService
 from roomba.config import config
 
 logger = logging.getLogger("roomba.core.controller")
@@ -44,6 +46,7 @@ class RobotController:
         self.client: Optional[RoombaClient | MockRoombaClient] = None
         self.is_mock: bool = False
         self.port: Optional[str] = None
+        self.last_error: Optional[str] = None
 
         # Safety & Arming State
         self.armed: bool = False
@@ -67,6 +70,10 @@ class RobotController:
         
         # 2D Mapping (Walls, Voids, Free Space)
         self.grid_map = OccupancyGrid(cell_size_mm=50, width_cells=200, height_cells=200)
+
+        # Integrated Camera Vision & English Voice Services
+        self.vision = VisionService(controller=self)
+        self.voice = VoiceService(controller=self)
 
     def _init_modes(self) -> None:
         """Register autonomous operating mode scripts."""
@@ -161,19 +168,25 @@ class RobotController:
             self.port = "MOCK_SIMULATOR"
             self.client = MockRoombaClient(port=self.port)
             await self.client.connect()
+            self.last_error = None
             self.log_event("info", "Connected to Mock Roomba Simulator")
         else:
             target_port = port or find_roomba_port()
             if not target_port:
-                raise ConnectionError("No Roomba serial port detected. Specify port or use Mock mode.")
+                msg = "No Roomba serial port detected. Connect USB cable or use Mock mode."
+                self.last_error = msg
+                self.log_event("warn", msg)
+                raise ConnectionError(msg)
             self.port = target_port
             self.client = RoombaClient(port=target_port, baudrate=config.baudrate, timeout=config.serial_timeout)
             try:
                 await self.client.connect()
+                self.last_error = None
                 self.log_event("success", f"Serial connection opened on {target_port}")
             except Exception as e:
                 self.client = None
                 self.port = None
+                self.last_error = str(e)
                 self.log_event("error", f"Connection failed on {target_port}: {e}")
                 raise
 
@@ -220,6 +233,21 @@ class RobotController:
         self.latest_telemetry = self._empty_telemetry()
         await self._broadcast_telemetry(self.latest_telemetry)
         return {"status": "disconnected"}
+
+    async def retry_connect(self, port: Optional[str] = None, mock: bool = False) -> Dict[str, Any]:
+        """Attempt to connect to Roomba without raising on missing hardware."""
+        try:
+            res = await self.connect(port=port, mock=mock)
+            return {**res, "connected": True, "error": None}
+        except Exception as e:
+            self.last_error = str(e)
+            return {
+                "status": "error",
+                "connected": False,
+                "port": None,
+                "is_mock": False,
+                "error": self.last_error,
+            }
 
     # --- Safety & Arming Controls ---
 

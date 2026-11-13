@@ -57,6 +57,12 @@
     </div>
   </header>
 
+  <!-- Hardware Resilience & Error Banner (Robot / Camera / Audio) -->
+  <div id="hardware-alert-banner" class="hardware-alert-banner" style="display: none;">
+    <div class="hardware-alert-items" id="hardware-alert-items"></div>
+    <button id="btn-retry-all-hw" class="btn btn-secondary btn-sm" type="button">🔄 Try Again (All)</button>
+  </div>
+
   <!-- Mobile Cockpit Tab Navigation Bar -->
   <nav class="mobile-tab-bar" id="mobile-tab-bar" aria-label="Cockpit Tabs">
     <button class="mobile-tab-btn active" data-tab="drive">
@@ -70,6 +76,10 @@
     <button class="mobile-tab-btn" data-tab="power">
       <span class="mobile-tab-icon">⚡</span>
       <span class="mobile-tab-title">Power</span>
+    </button>
+    <button class="mobile-tab-btn" data-tab="vision">
+      <span class="mobile-tab-icon">📷</span>
+      <span class="mobile-tab-title">Vision</span>
     </button>
     <button class="mobile-tab-btn" data-tab="console">
       <span class="mobile-tab-icon">📋</span>
@@ -480,6 +490,73 @@
       </div>
 
 
+    </section>
+
+    <!-- Column 4: Camera Vision & Person Following -->
+    <section class="card card-vision" data-tab-pane="vision">
+      <div class="card-header">
+        <h2>CAMERA VISION & PERSON FOLLOW</h2>
+        <span id="camera-status-badge" class="badge">CHECKING</span>
+      </div>
+
+      <!-- Camera Error / Offline State -->
+      <div id="camera-error-box" class="hw-error-box" style="display: none;">
+        <p id="camera-error-text" class="hw-error-text">No camera detected.</p>
+        <div class="hw-error-actions">
+          <button id="btn-retry-camera" class="btn btn-primary btn-sm" type="button">🔄 Try Again</button>
+          <button id="btn-mock-camera" class="btn btn-secondary btn-sm" type="button">🧪 Use Mock Camera</button>
+        </div>
+      </div>
+
+      <!-- Live Camera MJPEG Stream -->
+      <div id="camera-feed-box" class="camera-feed-box" style="display: none;">
+        <img id="camera-stream-img" class="camera-stream-img" alt="Roomba Camera Feed" />
+        <div class="camera-overlay-bar">
+          <span id="person-detect-badge" class="badge">NO PERSON</span>
+          <span id="camera-fps-text" class="camera-fps-text">-- FPS</span>
+        </div>
+      </div>
+
+      <!-- Follow Person Controls -->
+      <div class="vision-controls-row">
+        <button id="btn-toggle-follow" class="btn btn-primary" type="button">👤 Start Follow Person</button>
+        <button id="btn-refresh-camera" class="btn btn-secondary btn-sm" type="button">🔄 Retry Camera</button>
+      </div>
+
+      <!-- English Voice (TTS & STT) Section -->
+      <div class="voice-section">
+        <div class="section-title-row">
+          <h3>ENGLISH VOICE (TTS & STT)</h3>
+          <button id="btn-retry-voice" class="btn btn-secondary btn-sm" type="button">🔄 Retry Audio</button>
+        </div>
+
+        <div class="voice-hw-status">
+          <span id="speaker-status-pill" class="pill">SPEAKER: CHECKING</span>
+          <span id="mic-status-pill" class="pill">MIC: CHECKING</span>
+        </div>
+        <p id="voice-hw-hint" class="arm-hint">If Pi mic/speakers are not connected yet, browser TTS/STT fallback works automatically.</p>
+
+        <!-- TTS Input -->
+        <div class="sound-group">
+          <label class="sound-label" for="input-tts-text">🔊 Text-to-Speech (English):</label>
+          <div class="sound-input-row">
+            <input type="text" id="input-tts-text" class="sound-input" placeholder="Type English text for Roomba to speak..." value="Hello! Roomba is ready." maxlength="300" />
+            <button id="btn-speak-tts" class="btn btn-secondary" type="button">🔊 Speak</button>
+          </div>
+        </div>
+
+        <!-- STT & Voice Command -->
+        <div class="sound-group">
+          <label class="sound-label" for="input-stt-command">🎤 Speech-to-Text & Voice Command (English):</label>
+          <div class="sound-input-row">
+            <button id="btn-browser-stt" class="btn btn-primary btn-sm" type="button">🎤 Listen (Browser Mic)</button>
+            <input type="text" id="input-stt-command" class="sound-input" placeholder="Or type command: follow me, stop, battery..." maxlength="200" />
+            <button id="btn-send-voice-cmd" class="btn btn-secondary btn-sm" type="button">▶ Run</button>
+          </div>
+        </div>
+
+        <div id="voice-reply-box" class="voice-reply-box">Voice ready. Say or type a command (e.g. "follow me", "stop", "status").</div>
+      </div>
     </section>
 
     <!-- Bottom Full-Width Row: Event Console & Diagnostics -->
