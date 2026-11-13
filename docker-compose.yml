@@ -31,10 +31,11 @@ services:
       - ROOMBA_DEADMAN_TIMEOUT=${ROOMBA_DEADMAN_TIMEOUT:-0.5}
       - ROOMBA_CAMERA_ENABLED=${ROOMBA_CAMERA_ENABLED:-false}
       - ROOMBA_CAMERA_INDEX=${ROOMBA_CAMERA_INDEX:-0}
-    # Privileged mode & /dev mount grant dynamic access to USB CDC ACM ports (/dev/ttyACM*) and cameras
+    # Privileged mode, /dev & /run/udev grant dynamic access to USB serial ports, cameras & libcamera
     privileged: true
     volumes:
       - /dev:/dev
+      - /run/udev:/run/udev:ro
     group_add:
       - dialout
       - video

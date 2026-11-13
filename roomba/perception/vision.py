@@ -164,6 +164,7 @@ class VisionService:
             self.status = "error"
             self.detector_backend = "none"
             discovered = discover_video_devices()
+            libcamera_err = getattr(candidates[2], "last_error", None)
             if discovered:
                 names = ", ".join(f"{d['path']}({d['name']})" for d in discovered[:6])
                 only_internal = all(d["is_pi_internal"] for d in discovered)
@@ -171,6 +172,10 @@ class VisionService:
                     self.error = (
                         f"Only Pi internal ISP/CSI nodes found ({names}), and rpicam-vid/picamera2 "
                         "is unavailable inside this environment. Install rpicam-apps/libcamera or connect a USB webcam, then click Try Again."
+                    )
+                elif libcamera_err:
+                    self.error = (
+                        f"Camera devices found ({names}); {libcamera_err}. Click Try Again."
                     )
                 else:
                     self.error = (

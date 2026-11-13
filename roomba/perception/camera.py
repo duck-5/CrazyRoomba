@@ -354,8 +354,10 @@ class LibcameraCLISource(BaseCameraSource):
         self.height = height
         self.fps = fps
         self.backend_name = "libcamera-cli"
+        self.last_error: Optional[str] = None
         self._proc: Optional[subprocess.Popen] = None
         self._buffer = bytearray()
+        self._stderr_lines: List[str] = []
         self._cv2: Any = None
         self._np: Any = None
 
@@ -367,11 +369,25 @@ class LibcameraCLISource(BaseCameraSource):
                 return path
         return None
 
+    def _drain_stderr(self, pipe: Any) -> None:
+        try:
+            for raw in iter(pipe.readline, b""):
+                line = raw.decode("utf-8", errors="ignore").strip()
+                if line:
+                    self._stderr_lines.append(line)
+                    if len(self._stderr_lines) > 15:
+                        self._stderr_lines.pop(0)
+        except Exception:
+            pass
+
     async def open(self) -> bool:
         if self.is_open:
             return True
+        self.last_error = None
+        self._stderr_lines.clear()
         cli = self.find_cli()
         if not cli:
+            self.last_error = "rpicam-vid / libcamera-vid not found"
             return False
 
         try:
@@ -379,7 +395,8 @@ class LibcameraCLISource(BaseCameraSource):
             import numpy as np
             self._cv2 = cv2
             self._np = np
-        except ImportError:
+        except ImportError as e:
+            self.last_error = f"cv2/numpy unavailable: {e}"
             return False
 
         cmd = [
@@ -390,16 +407,21 @@ class LibcameraCLISource(BaseCameraSource):
             "--width", str(self.width),
             "--height", str(self.height),
             "--framerate", str(self.fps),
-            "--nopreview",
+            "-n",
             "-o", "-",
         ]
         try:
+            import threading
             self._proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 bufsize=0,
             )
+            if self._proc.stderr is not None:
+                t = threading.Thread(target=self._drain_stderr, args=(self._proc.stderr,), daemon=True)
+                t.start()
+
             # Verify first JPEG frame arrives within ~8s (Pi 5 IMX708 ISP + AE init)
             loop = asyncio.get_running_loop()
             frame = await asyncio.wait_for(
@@ -407,6 +429,9 @@ class LibcameraCLISource(BaseCameraSource):
                 timeout=8.0,
             )
             if frame is None:
+                err_tail = " | ".join(self._stderr_lines[-3:])
+                self.last_error = f"{os.path.basename(cli)} exited without frames" + (f": {err_tail}" if err_tail else "")
+                logger.warning(self.last_error)
                 await self.close()
                 return False
             self.is_open = True
@@ -414,7 +439,9 @@ class LibcameraCLISource(BaseCameraSource):
             logger.info(f"LibcameraCLISource opened via {cli}")
             return True
         except Exception as e:
-            logger.debug(f"LibcameraCLISource failed: {e}")
+            err_tail = " | ".join(self._stderr_lines[-3:])
+            self.last_error = f"{os.path.basename(cli)} failed ({type(e).__name__}: {e})" + (f": {err_tail}" if err_tail else "")
+            logger.warning(self.last_error)
             await self.close()
             return False
 
