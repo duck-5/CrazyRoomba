@@ -360,6 +360,13 @@ class LibcameraCLISource(BaseCameraSource):
         self._stderr_lines: List[str] = []
         self._cv2: Any = None
         self._np: Any = None
+        import threading
+        self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        self._latest_jpg: Optional[bytes] = None
+        self._latest_seq: int = 0
+        self._last_read_seq: int = 0
+        self._reader_eof: bool = False
 
     @staticmethod
     def find_cli() -> Optional[str]:
@@ -380,11 +387,55 @@ class LibcameraCLISource(BaseCameraSource):
         except Exception:
             pass
 
+    def _drain_stdout(self, pipe: Any) -> None:
+        """Continuously parse MJPEG frames from stdout, keeping ONLY the latest frame (zero pipe lag)."""
+        buf = bytearray()
+        try:
+            while True:
+                chunk = pipe.read(32768)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+
+                # Extract all complete JPEG frames in buffer and keep only the newest one
+                newest_jpg: Optional[bytes] = None
+                while True:
+                    soi = buf.find(b"\xff\xd8")
+                    if soi == -1:
+                        if len(buf) > 65536:
+                            buf.clear()
+                        break
+                    if soi > 0:
+                        del buf[:soi]
+                    eoi = buf.find(b"\xff\xd9", 2)
+                    if eoi == -1:
+                        break
+                    newest_jpg = bytes(buf[: eoi + 2])
+                    del buf[: eoi + 2]
+
+                if newest_jpg is not None:
+                    with self._cond:
+                        self._latest_jpg = newest_jpg
+                        self._latest_seq += 1
+                        self._cond.notify_all()
+        except Exception:
+            pass
+        finally:
+            with self._cond:
+                self._reader_eof = True
+                self._cond.notify_all()
+
     async def open(self) -> bool:
         if self.is_open:
             return True
         self.last_error = None
         self._stderr_lines.clear()
+        with self._cond:
+            self._latest_jpg = None
+            self._latest_seq = 0
+            self._last_read_seq = 0
+            self._reader_eof = False
+
         cli = self.find_cli()
         if not cli:
             self.last_error = "rpicam-vid / libcamera-vid not found"
@@ -403,6 +454,7 @@ class LibcameraCLISource(BaseCameraSource):
             cli,
             "--camera", str(self.device_index),
             "--codec", "mjpeg",
+            "--flush",
             "-t", "0",
             "--width", str(self.width),
             "--height", str(self.height),
@@ -419,13 +471,14 @@ class LibcameraCLISource(BaseCameraSource):
                 bufsize=0,
             )
             if self._proc.stderr is not None:
-                t = threading.Thread(target=self._drain_stderr, args=(self._proc.stderr,), daemon=True)
-                t.start()
+                threading.Thread(target=self._drain_stderr, args=(self._proc.stderr,), daemon=True).start()
+            if self._proc.stdout is not None:
+                threading.Thread(target=self._drain_stdout, args=(self._proc.stdout,), daemon=True).start()
 
             # Verify first JPEG frame arrives within ~8s (Pi 5 IMX708 ISP + AE init)
             loop = asyncio.get_running_loop()
             frame = await asyncio.wait_for(
-                loop.run_in_executor(None, self._read_frame_sync),
+                loop.run_in_executor(None, self._read_frame_sync, 7.5),
                 timeout=8.0,
             )
             if frame is None:
@@ -445,40 +498,26 @@ class LibcameraCLISource(BaseCameraSource):
             await self.close()
             return False
 
-    def _read_frame_sync(self) -> Optional[Any]:
-        if self._proc is None or self._proc.stdout is None:
+    def _read_frame_sync(self, wait_timeout: float = 1.0) -> Optional[Any]:
+        if self._proc is None:
             return None
 
-        while True:
-            if self._proc.poll() is not None:
+        with self._cond:
+            if self._latest_seq == self._last_read_seq and not self._reader_eof:
+                self._cond.wait(timeout=wait_timeout)
+            if self._latest_jpg is None or self._latest_seq == self._last_read_seq:
                 return None
-            chunk = self._proc.stdout.read(4096)
-            if not chunk:
-                return None
-            self._buffer.extend(chunk)
+            jpg = self._latest_jpg
+            self._last_read_seq = self._latest_seq
 
-            soi = self._buffer.find(b"\xff\xd8")
-            if soi == -1:
-                if len(self._buffer) > 65536:
-                    self._buffer.clear()
-                continue
-            if soi > 0:
-                del self._buffer[:soi]
-
-            eoi = self._buffer.find(b"\xff\xd9", 2)
-            if eoi != -1:
-                jpg = bytes(self._buffer[: eoi + 2])
-                del self._buffer[: eoi + 2]
-                arr = self._np.frombuffer(jpg, dtype=self._np.uint8)
-                frame = self._cv2.imdecode(arr, self._cv2.IMREAD_COLOR)
-                if frame is not None:
-                    return frame
+        arr = self._np.frombuffer(jpg, dtype=self._np.uint8)
+        return self._cv2.imdecode(arr, self._cv2.IMREAD_COLOR)
 
     async def read_frame(self) -> Optional[Any]:
         if not self.is_open or self._proc is None:
             return None
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._read_frame_sync)
+        return await loop.run_in_executor(None, self._read_frame_sync, 1.0)
 
     async def close(self) -> None:
         self.is_open = False

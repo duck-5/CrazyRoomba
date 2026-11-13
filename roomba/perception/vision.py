@@ -258,6 +258,17 @@ class VisionService:
         """Return latest JPEG-encoded frame bytes, if available."""
         return self._latest_jpeg
 
+    async def wait_next_jpeg(self, last_seq: int, timeout: float = 0.5) -> Tuple[int, Optional[bytes]]:
+        """Wait until a newer JPEG frame is available (or timeout), returning (seq, jpeg)."""
+        if self.frame_count > last_seq and self._latest_jpeg is not None:
+            return self.frame_count, self._latest_jpeg
+        if self._frame_event is not None:
+            try:
+                await asyncio.wait_for(self._frame_event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
+        return self.frame_count, self._latest_jpeg
+
     def _process_real_frame_sync(self, frame: Any) -> Tuple[Optional[Dict[str, Any]], Optional[bytes]]:
         """Run HOG person detection and draw overlay on frame (called in thread executor)."""
         cv2 = self._cv2
@@ -278,7 +289,7 @@ class VisionService:
                 small,
                 winStride=(8, 8),
                 padding=(4, 4),
-                scale=1.05,
+                scale=1.08,
             )
 
             best_conf = 0.0
@@ -448,9 +459,9 @@ class VisionService:
                     inst_fps = 1.0 / dt
                     self.fps = 0.8 * self.fps + 0.2 * inst_fps if self.fps > 0 else inst_fps
 
-                # Cap at ~12 FPS to keep Pi 5 CPU cool
+                # Target ~15 FPS with minimal artificial sleep when processing is busy
                 elapsed = time.monotonic() - t_start
-                await asyncio.sleep(max(0.03, 0.085 - elapsed))
+                await asyncio.sleep(max(0.005, 0.065 - elapsed))
 
             except asyncio.CancelledError:
                 break

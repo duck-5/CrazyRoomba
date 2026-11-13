@@ -371,18 +371,24 @@ def create_app() -> FastAPI:
             )
 
         async def frame_generator():
+            last_seq = -1
             while controller.vision.available:
-                jpeg = controller.vision.get_latest_jpeg()
-                if jpeg is not None:
+                seq, jpeg = await controller.vision.wait_next_jpeg(last_seq, timeout=0.5)
+                if jpeg is not None and seq != last_seq:
+                    last_seq = seq
                     yield (
                         b"--frame\r\n"
                         b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
                     )
-                await asyncio.sleep(0.08)
 
         return StreamingResponse(
             frame_generator(),
             media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     # --- English Voice (TTS & STT) Endpoints ---
