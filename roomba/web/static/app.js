@@ -1466,7 +1466,8 @@ class RoombaCockpit {
           this.personDetectBadge.textContent = `PERSON DETECTED (${pct}%)`;
           this.personDetectBadge.className = "badge badge-success";
         } else {
-          this.personDetectBadge.textContent = "NO PERSON";
+          const rawPct = Math.round((cam.last_raw_confidence || 0) * 100);
+          this.personDetectBadge.textContent = rawPct > 0 ? `NO PERSON (max ${rawPct}%)` : "NO PERSON";
           this.personDetectBadge.className = "badge";
         }
       }

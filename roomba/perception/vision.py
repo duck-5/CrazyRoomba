@@ -498,6 +498,7 @@ class VisionService:
     async def _vision_loop(self) -> None:
         """Background loop reading frames, detecting persons, and updating controller perception."""
         loop = asyncio.get_running_loop()
+        last_rate_log = 0.0
         while self.available and self.camera is not None:
             t_start = time.monotonic()
             try:
@@ -505,6 +506,7 @@ class VisionService:
                     target, jpeg = await loop.run_in_executor(None, self._generate_mock_frame_sync, t_start)
                     self.person_detected = True
                     self.target_person = target
+                    self.last_raw_confidence = float(target.get("confidence", 0.0))
                     if jpeg is not None:
                         self._latest_jpeg = jpeg
                     if self.controller:
@@ -559,6 +561,18 @@ class VisionService:
                 if dt > 0:
                     inst_fps = 1.0 / dt
                     self.fps = 0.8 * self.fps + 0.2 * inst_fps if self.fps > 0 else inst_fps
+
+                now_log = time.monotonic()
+                if now_log - last_rate_log >= 1.0:
+                    last_rate_log = now_log
+                    conf_pct = round(self.last_raw_confidence * 100.0, 1)
+                    state_str = "DETECTED" if self.person_detected else "NONE"
+                    msg = (
+                        f"[VISION] Person detection confidence: {conf_pct:.1f}% "
+                        f"(state={state_str}, backend={self.detector_backend}, fps={self.fps:.1f})"
+                    )
+                    print(msg, flush=True)
+                    logger.info(msg)
 
                 # Target ~15 FPS with minimal artificial sleep when processing is busy
                 elapsed = time.monotonic() - t_start
