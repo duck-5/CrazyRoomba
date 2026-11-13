@@ -386,7 +386,6 @@ class LibcameraCLISource(BaseCameraSource):
             cli,
             "--camera", str(self.device_index),
             "--codec", "mjpeg",
-            "--inline",
             "-t", "0",
             "--width", str(self.width),
             "--height", str(self.height),
@@ -401,11 +400,11 @@ class LibcameraCLISource(BaseCameraSource):
                 stderr=subprocess.DEVNULL,
                 bufsize=0,
             )
-            # Verify first JPEG frame arrives within ~3s
+            # Verify first JPEG frame arrives within ~8s (Pi 5 IMX708 ISP + AE init)
             loop = asyncio.get_running_loop()
             frame = await asyncio.wait_for(
                 loop.run_in_executor(None, self._read_frame_sync),
-                timeout=3.0,
+                timeout=8.0,
             )
             if frame is None:
                 await self.close()
