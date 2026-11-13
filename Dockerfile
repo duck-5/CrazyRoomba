@@ -67,7 +67,12 @@ RUN pip install --upgrade pip setuptools wheel && \
     pip install --default-timeout=1000 --retries=20 --prefer-binary -r requirements.txt && \
     rm -rf /root/.cache/pip
 
-# 5. Copy project source code
+# 5. Pre-download MobileNet-SSD person detection model (~23MB) for fast Pi 5 CPU inference
+RUN mkdir -p /app/models && \
+    curl -fsSL "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/voc/MobileNetSSD_deploy.prototxt" -o /app/models/MobileNetSSD_deploy.prototxt && \
+    curl -fsSL "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/mobilenet_iter_73000.caffemodel" -o /app/models/mobilenet_iter_73000.caffemodel
+
+# 6. Copy project source code
 COPY roomba/ ./roomba/
 COPY scripts/ ./scripts/
 

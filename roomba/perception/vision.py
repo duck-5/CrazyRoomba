@@ -13,6 +13,8 @@ import asyncio
 import logging
 import math
 import time
+import urllib.request
+from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
 from roomba.perception.camera import (
@@ -23,7 +25,11 @@ from roomba.perception.camera import (
     LibcameraCLISource,
     discover_video_devices,
 )
-from roomba.config import config
+from roomba.config import config, BASE_DIR
+
+_MOBILENET_PROTOTXT_URL = "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/voc/MobileNetSSD_deploy.prototxt"
+_MOBILENET_MODEL_URL = "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/mobilenet_iter_73000.caffemodel"
+_MOBILENET_PERSON_CLASS_ID = 15
 
 logger = logging.getLogger("roomba.perception.vision")
 
@@ -54,6 +60,7 @@ class VisionService:
         self._latest_jpeg: Optional[bytes] = None
         self._frame_event: Optional[asyncio.Event] = None
         self._loop_task: Optional[asyncio.Task] = None
+        self._ssd_net: Any = None
         self._hog: Any = None
         self._cv2: Any = None
         self._consecutive_failures: int = 0
@@ -199,16 +206,8 @@ class VisionService:
         self.device_path = cam.device_path
         self.camera_backend = cam.backend_name
 
-        # Initialize built-in OpenCV HOG person detector (works offline, zero extra weights)
-        try:
-            hog = cv2.HOGDescriptor()
-            hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
-            self._hog = hog
-            self.detector_backend = "hog"
-        except Exception as e:
-            logger.warning(f"HOG detector init failed: {e}")
-            self._hog = None
-            self.detector_backend = "none"
+        # Initialize person detector (MobileNet-SSD primary, HOG fallback)
+        await asyncio.get_running_loop().run_in_executor(None, self._init_detector_sync, cv2)
 
         self.camera = cam
         self.available = True
@@ -277,8 +276,67 @@ class VisionService:
         self.rotation = normalized
         return self.rotation
 
+    def _resolve_mobilenet_paths(self) -> Optional[Tuple[Path, Path]]:
+        """Locate or download MobileNet-SSD prototxt and caffemodel."""
+        search_dirs = [
+            Path("/app/models"),
+            BASE_DIR / "models",
+            Path.home() / ".cache" / "roomba" / "models",
+        ]
+        for d in search_dirs:
+            proto = d / "MobileNetSSD_deploy.prototxt"
+            model = d / "mobilenet_iter_73000.caffemodel"
+            if proto.exists() and model.exists() and model.stat().st_size > 1_000_000:
+                return proto, model
+
+        # Auto-download to cache if missing
+        cache_dir = Path.home() / ".cache" / "roomba" / "models"
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            proto = cache_dir / "MobileNetSSD_deploy.prototxt"
+            model = cache_dir / "mobilenet_iter_73000.caffemodel"
+            if not proto.exists():
+                logger.info("Downloading MobileNetSSD_deploy.prototxt...")
+                urllib.request.urlretrieve(_MOBILENET_PROTOTXT_URL, str(proto))
+            if not model.exists() or model.stat().st_size < 1_000_000:
+                logger.info("Downloading mobilenet_iter_73000.caffemodel (~23MB)...")
+                urllib.request.urlretrieve(_MOBILENET_MODEL_URL, str(model))
+            return proto, model
+        except Exception as e:
+            logger.warning(f"Could not download MobileNet-SSD model: {e}")
+            return None
+
+    def _init_detector_sync(self, cv2: Any) -> None:
+        """Initialize MobileNet-SSD DNN person detector, falling back to HOG."""
+        self._ssd_net = None
+        self._hog = None
+        self.detector_backend = "none"
+
+        paths = self._resolve_mobilenet_paths()
+        if paths is not None:
+            proto, model = paths
+            try:
+                net = cv2.dnn.readNetFromCaffe(str(proto), str(model))
+                self._ssd_net = net
+                self.detector_backend = "mobilenet-ssd"
+                logger.info(f"Person detector initialized: MobileNet-SSD ({model})")
+                return
+            except Exception as e:
+                logger.warning(f"MobileNet-SSD load failed, falling back to HOG: {e}")
+
+        try:
+            hog = cv2.HOGDescriptor()
+            hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+            self._hog = hog
+            self.detector_backend = "hog"
+            logger.info("Person detector initialized: OpenCV HOG")
+        except Exception as e:
+            logger.warning(f"HOG detector init failed: {e}")
+            self._hog = None
+            self.detector_backend = "none"
+
     def _process_real_frame_sync(self, frame: Any) -> Tuple[Optional[Dict[str, Any]], Optional[bytes]]:
-        """Run optional rotation, HOG person detection, and draw overlay on frame (called in thread executor)."""
+        """Run optional rotation, person detection (MobileNet-SSD / HOG), and draw overlay on frame."""
         cv2 = self._cv2
         if cv2 is None or frame is None:
             return None, None
@@ -292,8 +350,28 @@ class VisionService:
 
         h, w = frame.shape[:2]
         target = None
+        best_conf = 0.0
+        best_box: Optional[Tuple[int, int, int, int]] = None
 
-        if self._hog is not None:
+        if self._ssd_net is not None:
+            resized = cv2.resize(frame, (300, 300))
+            blob = cv2.dnn.blobFromImage(resized, 0.007843, (300, 300), 127.5)
+            self._ssd_net.setInput(blob)
+            detections = self._ssd_net.forward()
+            num_det = detections.shape[2] if len(detections.shape) >= 3 else 0
+            for i in range(num_det):
+                conf = float(detections[0, 0, i, 2])
+                class_id = int(detections[0, 0, i, 1])
+                if class_id == _MOBILENET_PERSON_CLASS_ID and conf > 0.35 and conf > best_conf:
+                    x1 = max(0, int(detections[0, 0, i, 3] * w))
+                    y1 = max(0, int(detections[0, 0, i, 4] * h))
+                    x2 = min(w, int(detections[0, 0, i, 5] * w))
+                    y2 = min(h, int(detections[0, 0, i, 6] * h))
+                    if x2 > x1 and y2 > y1:
+                        best_conf = conf
+                        best_box = (x1, y1, x2 - x1, y2 - y1)
+
+        elif self._hog is not None:
             # Resize for fast CPU inference on Raspberry Pi 5
             target_w = 320
             scale = target_w / float(w)
@@ -307,8 +385,6 @@ class VisionService:
                 scale=1.08,
             )
 
-            best_conf = 0.0
-            best_box = None
             for idx, (rx, ry, rw, rh) in enumerate(rects):
                 if idx < len(weights):
                     raw_w = weights[idx]
@@ -326,27 +402,27 @@ class VisionService:
                         int(rh / scale),
                     )
 
-            if best_box is not None:
-                bx, by, bw, bh = best_box
-                x_center = (bx + bw / 2.0) / float(w)
-                bbox_width = bw / float(w)
-                target = {
-                    "x_center": round(x_center, 4),
-                    "bbox_width": round(bbox_width, 4),
-                    "confidence": round(best_conf, 3),
-                    "bbox": [bx, by, bw, bh],
-                }
-                cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (0, 230, 118), 2)
-                label = f"PERSON {int(best_conf * 100)}%"
-                cv2.putText(
-                    frame,
-                    label,
-                    (bx, max(20, by - 8)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (0, 230, 118),
-                    2,
-                )
+        if best_box is not None:
+            bx, by, bw, bh = best_box
+            x_center = (bx + bw / 2.0) / float(w)
+            bbox_width = bw / float(w)
+            target = {
+                "x_center": round(x_center, 4),
+                "bbox_width": round(bbox_width, 4),
+                "confidence": round(best_conf, 3),
+                "bbox": [bx, by, bw, bh],
+            }
+            cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (0, 230, 118), 2)
+            label = f"PERSON {int(best_conf * 100)}%"
+            cv2.putText(
+                frame,
+                label,
+                (bx, max(20, by - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 230, 118),
+                2,
+            )
 
         # Overlay HUD status
         mode_text = "FOLLOW ACTIVE" if (

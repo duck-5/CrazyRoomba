@@ -285,3 +285,37 @@ def test_camera_auto_scan_skips_pi_internal_nodes(monkeypatch):
     assert src.device_path == "/dev/video8"
     assert src.backend_name == "opencv-v4l2"
     asyncio.run(src.close())
+
+
+def test_mobilenet_ssd_person_detection():
+    """Verify _process_real_frame_sync detects class 15 (person) from MobileNet-SSD DNN output."""
+    import numpy as np
+    from unittest.mock import MagicMock
+    from roomba.perception.vision import VisionService
+
+    vs = VisionService()
+    fake_cv2 = MagicMock()
+    fake_cv2.IMWRITE_JPEG_QUALITY = 1
+    fake_cv2.FONT_HERSHEY_SIMPLEX = 0
+    fake_cv2.ROTATE_180 = 1
+    fake_cv2.rotate.side_effect = lambda f, code: f
+    fake_cv2.resize.side_effect = lambda f, sz: np.zeros((sz[1], sz[0], 3), dtype=np.uint8)
+    fake_cv2.dnn.blobFromImage.return_value = np.zeros((1, 3, 300, 300), dtype=np.float32)
+    fake_cv2.imencode.return_value = (True, np.array([1, 2, 3], dtype=np.uint8))
+
+    fake_net = MagicMock()
+    # Shape (1, 1, 1, 7): [batch, id, class_id=15, conf=0.88, x1, y1, x2, y2] -> 7 elements
+    det = np.array([[[[0.0, 15.0, 0.88, 0.2, 0.1, 0.6, 0.9]]]], dtype=np.float32)
+    fake_net.forward.return_value = det
+
+    vs._cv2 = fake_cv2
+    vs._ssd_net = fake_net
+    vs.detector_backend = "mobilenet-ssd"
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    target, jpeg = vs._process_real_frame_sync(frame)
+    assert target is not None
+    assert target["confidence"] == 0.88
+    assert 0.39 <= target["x_center"] <= 0.41
+    assert 0.39 <= target["bbox_width"] <= 0.41
+    assert jpeg == b"\x01\x02\x03"
