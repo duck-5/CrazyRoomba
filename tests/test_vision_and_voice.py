@@ -319,3 +319,49 @@ def test_mobilenet_ssd_person_detection():
     assert 0.39 <= target["x_center"] <= 0.41
     assert 0.39 <= target["bbox_width"] <= 0.41
     assert jpeg == b"\x01\x02\x03"
+
+
+def test_yolox_coco_person_detection():
+    """Verify _process_real_frame_sync decodes YOLOX (1, 8400, 85) COCO person output."""
+    import numpy as np
+    from unittest.mock import MagicMock
+    from roomba.perception.vision import VisionService
+
+    vs = VisionService()
+    vs._init_yolox_anchors()
+
+    fake_cv2 = MagicMock()
+    fake_cv2.IMWRITE_JPEG_QUALITY = 1
+    fake_cv2.FONT_HERSHEY_SIMPLEX = 0
+    fake_cv2.INTER_LINEAR = 1
+    fake_cv2.ROTATE_180 = 1
+    fake_cv2.rotate.side_effect = lambda f, code: f
+    fake_cv2.resize.side_effect = lambda f, sz, **kw: np.zeros((sz[1], sz[0], 3), dtype=np.uint8)
+    fake_cv2.imencode.return_value = (True, np.array([1, 2, 3], dtype=np.uint8))
+
+    # Build synthetic (1, 8400, 85) YOLOX output with a person at anchor 0
+    # At anchor 0: grid=(0, 0), stride=8 -> cx=40*8=320, cy=30*8=240
+    # exp(3.401)*8 ~= 240, exp(3.689)*8 ~= 320
+    outs = np.zeros((1, 8400, 85), dtype=np.float32)
+    outs[0, 0, 0] = 40.0
+    outs[0, 0, 1] = 30.0
+    outs[0, 0, 2] = np.log(240.0 / 8.0)
+    outs[0, 0, 3] = np.log(320.0 / 8.0)
+    outs[0, 0, 4] = 0.90  # objectness
+    outs[0, 0, 5] = 0.90  # COCO class 0 (person) -> score = 0.81
+
+    fake_net = MagicMock()
+    fake_net.getUnconnectedOutLayersNames.return_value = ["output"]
+    fake_net.forward.return_value = [outs]
+
+    vs._cv2 = fake_cv2
+    vs._yolox_net = fake_net
+    vs.detector_backend = "yolox-coco"
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    target, jpeg = vs._process_real_frame_sync(frame)
+    assert target is not None
+    assert abs(target["confidence"] - 0.81) < 0.02
+    assert abs(vs.last_raw_confidence - 0.81) < 0.02
+    assert 0.45 <= target["x_center"] <= 0.55
+    assert jpeg == b"\x01\x02\x03"

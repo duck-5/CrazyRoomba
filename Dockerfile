@@ -67,8 +67,9 @@ RUN pip install --upgrade pip setuptools wheel && \
     pip install --default-timeout=1000 --retries=20 --prefer-binary -r requirements.txt && \
     rm -rf /root/.cache/pip
 
-# 5. Pre-download MobileNet-SSD person detection model (~23MB) for fast Pi 5 CPU inference
+# 5. Pre-download YOLOX COCO ONNX (primary) & MobileNet-SSD (fallback) person detection models
 RUN mkdir -p /app/models && \
+    curl -fsSL "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/object_detection_yolox/object_detection_yolox_2022nov.onnx" -o /app/models/object_detection_yolox_2022nov.onnx && \
     curl -fsSL "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/voc/MobileNetSSD_deploy.prototxt" -o /app/models/MobileNetSSD_deploy.prototxt && \
     sed -i 's/confidence_threshold: 0.25/confidence_threshold: 0.05/' /app/models/MobileNetSSD_deploy.prototxt && \
     curl -fsSL "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/mobilenet_iter_73000.caffemodel" -o /app/models/mobilenet_iter_73000.caffemodel

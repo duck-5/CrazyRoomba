@@ -27,6 +27,8 @@ from roomba.perception.camera import (
 )
 from roomba.config import config, BASE_DIR
 
+_YOLOX_MODEL_URL = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/object_detection_yolox/object_detection_yolox_2022nov.onnx"
+_YOLOX_FILENAME = "object_detection_yolox_2022nov.onnx"
 _MOBILENET_PROTOTXT_URL = "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/voc/MobileNetSSD_deploy.prototxt"
 _MOBILENET_MODEL_URL = "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/mobilenet_iter_73000.caffemodel"
 _MOBILENET_PERSON_CLASS_ID = 15
@@ -61,6 +63,12 @@ class VisionService:
         self._latest_jpeg: Optional[bytes] = None
         self._frame_event: Optional[asyncio.Event] = None
         self._loop_task: Optional[asyncio.Task] = None
+        self._yolox_net: Any = None
+        self._yolox_grids: Any = None
+        self._yolox_strides: Any = None
+        self._last_det_box: Optional[Tuple[int, int, int, int]] = None
+        self._last_det_conf: float = 0.0
+        self._det_frame_idx: int = 0
         self._ssd_net: Any = None
         self._hog: Any = None
         self._cv2: Any = None
@@ -278,6 +286,44 @@ class VisionService:
         self.rotation = normalized
         return self.rotation
 
+    def _resolve_yolox_path(self) -> Optional[Path]:
+        """Locate or download OpenCV Zoo YOLOX COCO ONNX model."""
+        search_dirs = [
+            Path("/app/models"),
+            BASE_DIR / "models",
+            Path.home() / ".cache" / "roomba" / "models",
+        ]
+        for d in search_dirs:
+            model = d / _YOLOX_FILENAME
+            if model.exists() and model.stat().st_size > 5_000_000:
+                return model
+
+        cache_dir = Path.home() / ".cache" / "roomba" / "models"
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            model = cache_dir / _YOLOX_FILENAME
+            logger.info(f"Downloading {_YOLOX_FILENAME} (~35MB)...")
+            urllib.request.urlretrieve(_YOLOX_MODEL_URL, str(model))
+            if model.exists() and model.stat().st_size > 5_000_000:
+                return model
+        except Exception as e:
+            logger.warning(f"Could not download YOLOX model: {e}")
+        return None
+
+    def _init_yolox_anchors(self) -> None:
+        """Precompute YOLOX 640x640 anchor grids and strides."""
+        import numpy as np
+        grids = []
+        strides_list = []
+        for stride in (8, 16, 32):
+            size = 640 // stride
+            xv, yv = np.meshgrid(np.arange(size), np.arange(size))
+            grid = np.stack((xv, yv), 2).reshape(-1, 2)
+            grids.append(grid)
+            strides_list.append(np.full((grid.shape[0], 1), stride, dtype=np.float32))
+        self._yolox_grids = np.concatenate(grids, axis=0).astype(np.float32)
+        self._yolox_strides = np.concatenate(strides_list, axis=0).astype(np.float32)
+
     def _resolve_mobilenet_paths(self) -> Optional[Tuple[Path, Path]]:
         """Locate or download MobileNet-SSD prototxt and caffemodel."""
         search_dirs = [
@@ -313,10 +359,28 @@ class VisionService:
             return None
 
     def _init_detector_sync(self, cv2: Any) -> None:
-        """Initialize MobileNet-SSD DNN person detector, falling back to HOG."""
+        """Initialize YOLOX COCO ONNX (primary), MobileNet-SSD (fallback), or HOG."""
+        self._yolox_net = None
         self._ssd_net = None
         self._hog = None
+        self._last_det_box = None
+        self._last_det_conf = 0.0
+        self._det_frame_idx = 0
         self.detector_backend = "none"
+
+        yolox_path = self._resolve_yolox_path()
+        if yolox_path is not None:
+            try:
+                net = cv2.dnn.readNet(str(yolox_path))
+                net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+                net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+                self._init_yolox_anchors()
+                self._yolox_net = net
+                self.detector_backend = "yolox-coco"
+                logger.info(f"Person detector initialized: YOLOX COCO ({yolox_path})")
+                return
+            except Exception as e:
+                logger.warning(f"YOLOX load failed, falling back to MobileNet-SSD: {e}")
 
         paths = self._resolve_mobilenet_paths()
         if paths is not None:
@@ -357,10 +421,52 @@ class VisionService:
         h, w = frame.shape[:2]
         target = None
         best_conf = 0.0
-        raw_best_person_conf = 0.0
+        raw_best_person_conf = self.last_raw_confidence
         best_box: Optional[Tuple[int, int, int, int]] = None
 
-        if self._ssd_net is not None:
+        if self._yolox_net is not None:
+            run_infer = (self._det_frame_idx % 2 == 0)
+            self._det_frame_idx += 1
+            if run_infer:
+                import numpy as np
+                padded = np.ones((640, 640, 3), dtype=np.float32) * 114.0
+                ratio = min(640.0 / float(h), 640.0 / float(w))
+                new_w = max(1, int(w * ratio))
+                new_h = max(1, int(h * ratio))
+                resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+                padded[:new_h, :new_w] = resized
+                blob = np.transpose(padded, (2, 0, 1))[np.newaxis, :, :, :]
+
+                self._yolox_net.setInput(blob)
+                outs = self._yolox_net.forward(self._yolox_net.getUnconnectedOutLayersNames())
+                dets = outs[0][0].copy()  # (8400, 85)
+                dets[:, :2] = (dets[:, :2] + self._yolox_grids) * self._yolox_strides
+                dets[:, 2:4] = np.exp(dets[:, 2:4]) * self._yolox_strides
+
+                # COCO class 0 = person
+                person_scores = dets[:, 4] * dets[:, 5]
+                raw_best_person_conf = float(np.max(person_scores)) if person_scores.size > 0 else 0.0
+                raw_best_person_conf = min(1.0, max(0.0, raw_best_person_conf))
+
+                idx = int(np.argmax(person_scores)) if person_scores.size > 0 else -1
+                if idx >= 0 and float(person_scores[idx]) > 0.25:
+                    cx, cy, bw_box, bh_box = dets[idx, :4]
+                    x1 = max(0, int((cx - bw_box / 2.0) / ratio))
+                    y1 = max(0, int((cy - bh_box / 2.0) / ratio))
+                    x2 = min(w, int((cx + bw_box / 2.0) / ratio))
+                    y2 = min(h, int((cy + bh_box / 2.0) / ratio))
+                    if x2 > x1 and y2 > y1:
+                        best_conf = float(person_scores[idx])
+                        best_box = (x1, y1, x2 - x1, y2 - y1)
+
+                self._last_det_box = best_box
+                self._last_det_conf = best_conf
+            else:
+                best_box = self._last_det_box
+                best_conf = self._last_det_conf
+
+        elif self._ssd_net is not None:
+            raw_best_person_conf = 0.0
             resized = cv2.resize(frame, (300, 300))
             blob = cv2.dnn.blobFromImage(resized, 0.007843, (300, 300), 127.5)
             self._ssd_net.setInput(blob)
@@ -382,6 +488,7 @@ class VisionService:
                             best_box = (x1, y1, x2 - x1, y2 - y1)
 
         elif self._hog is not None:
+            raw_best_person_conf = 0.0
             # Resize for fast CPU inference on Raspberry Pi 5
             target_w = 320
             scale = target_w / float(w)
