@@ -53,6 +53,7 @@ class VisionService:
 
         self.person_detected: bool = False
         self.target_person: Optional[Dict[str, Any]] = None
+        self.last_raw_confidence: float = 0.0
         self.fps: float = 0.0
         self.frame_count: int = 0
         self.last_frame_time: float = 0.0
@@ -79,6 +80,7 @@ class VisionService:
             "error": self.error,
             "person_detected": self.person_detected,
             "target_person": self.target_person,
+            "last_raw_confidence": round(self.last_raw_confidence, 3),
             "fps": round(self.fps, 1),
             "frame_count": self.frame_count,
             "devices": discover_video_devices(),
@@ -351,6 +353,7 @@ class VisionService:
         h, w = frame.shape[:2]
         target = None
         best_conf = 0.0
+        raw_best_person_conf = 0.0
         best_box: Optional[Tuple[int, int, int, int]] = None
 
         if self._ssd_net is not None:
@@ -362,14 +365,17 @@ class VisionService:
             for i in range(num_det):
                 conf = float(detections[0, 0, i, 2])
                 class_id = int(detections[0, 0, i, 1])
-                if class_id == _MOBILENET_PERSON_CLASS_ID and conf > 0.35 and conf > best_conf:
-                    x1 = max(0, int(detections[0, 0, i, 3] * w))
-                    y1 = max(0, int(detections[0, 0, i, 4] * h))
-                    x2 = min(w, int(detections[0, 0, i, 5] * w))
-                    y2 = min(h, int(detections[0, 0, i, 6] * h))
-                    if x2 > x1 and y2 > y1:
-                        best_conf = conf
-                        best_box = (x1, y1, x2 - x1, y2 - y1)
+                if class_id == _MOBILENET_PERSON_CLASS_ID:
+                    if conf > raw_best_person_conf:
+                        raw_best_person_conf = conf
+                    if conf > 0.20 and conf > best_conf:
+                        x1 = max(0, int(detections[0, 0, i, 3] * w))
+                        y1 = max(0, int(detections[0, 0, i, 4] * h))
+                        x2 = min(w, int(detections[0, 0, i, 5] * w))
+                        y2 = min(h, int(detections[0, 0, i, 6] * h))
+                        if x2 > x1 and y2 > y1:
+                            best_conf = conf
+                            best_box = (x1, y1, x2 - x1, y2 - y1)
 
         elif self._hog is not None:
             # Resize for fast CPU inference on Raspberry Pi 5
@@ -393,7 +399,9 @@ class VisionService:
                     weight = 0.5
                 # Map HOG SVM score to ~0..1 confidence
                 conf = min(1.0, max(0.0, weight / 1.5))
-                if conf > 0.35 and conf > best_conf:
+                if conf > raw_best_person_conf:
+                    raw_best_person_conf = conf
+                if conf > 0.20 and conf > best_conf:
                     best_conf = conf
                     best_box = (
                         int(rx / scale),
@@ -401,6 +409,8 @@ class VisionService:
                         int(rw / scale),
                         int(rh / scale),
                     )
+
+        self.last_raw_confidence = raw_best_person_conf
 
         if best_box is not None:
             bx, by, bw, bh = best_box
@@ -430,7 +440,7 @@ class VisionService:
         ) else "VISION READY"
         cv2.putText(
             frame,
-            f"{mode_text} | {self.fps:.1f} FPS",
+            f"{mode_text} | {self.fps:.1f} FPS | {self.detector_backend}",
             (10, 24),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,

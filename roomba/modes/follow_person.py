@@ -76,7 +76,7 @@ class FollowPersonMode(BaseMode):
         target = context.perception.get("target_person")
 
         # 1. Target is visible
-        if target and target.get("confidence", 0) > 0.35:
+        if target and target.get("confidence", 0) > 0.20:
             self._last_seen_time = now
             x_center = float(target.get("x_center", 0.5))  # 0.0 left, 0.5 center, 1.0 right
             bbox_width = float(target.get("bbox_width", self.target_bbox_width))
