@@ -1318,6 +1318,7 @@ class RoombaCockpit {
     this.cameraErrorText = document.getElementById("camera-error-text");
     this.btnRetryCamera = document.getElementById("btn-retry-camera");
     this.btnMockCamera = document.getElementById("btn-mock-camera");
+    this.btnRotateCamera = document.getElementById("btn-rotate-camera");
     this.btnRefreshCamera = document.getElementById("btn-refresh-camera");
     this.cameraFeedBox = document.getElementById("camera-feed-box");
     this.cameraStreamImg = document.getElementById("camera-stream-img");
@@ -1342,6 +1343,17 @@ class RoombaCockpit {
     }
     if (this.btnRetryCamera) {
       this.btnRetryCamera.addEventListener("click", () => this.retryCamera());
+    }
+    if (this.btnRotateCamera) {
+      this.btnRotateCamera.addEventListener("click", async () => {
+        try {
+          const resp = await fetch("/api/camera/rotate", { method: "POST" });
+          const data = await resp.json();
+          this.logToConsole("info", `Camera rotation set to ${data.rotation}°`);
+        } catch (err) {
+          this.logToConsole("error", `Rotate camera failed: ${err.message}`);
+        }
+      });
     }
     if (this.btnRefreshCamera) {
       this.btnRefreshCamera.addEventListener("click", () => this.retryCamera());

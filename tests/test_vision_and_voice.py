@@ -216,6 +216,8 @@ def test_hog_2d_weights_conversion():
     fake_cv2 = MagicMock()
     fake_cv2.IMWRITE_JPEG_QUALITY = 1
     fake_cv2.FONT_HERSHEY_SIMPLEX = 0
+    fake_cv2.ROTATE_180 = 1
+    fake_cv2.rotate.side_effect = lambda f, code: f
     fake_cv2.resize.side_effect = lambda f, sz: np.zeros((sz[1], sz[0], 3), dtype=np.uint8)
     fake_cv2.imencode.return_value = (True, np.array([1, 2, 3], dtype=np.uint8))
 

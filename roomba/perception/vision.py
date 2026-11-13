@@ -36,6 +36,7 @@ class VisionService:
         self.device_index: int = config.camera_device_index if device_index is None else device_index
         self.device_path: Optional[str] = None
         self.camera_backend: str = "none"
+        self.rotation: int = config.camera_rotation % 360
 
         self.camera: Optional[BaseCameraSource] = None
         self.is_mock: bool = False
@@ -66,6 +67,7 @@ class VisionService:
             "device_index": self.device_index,
             "device_path": self.device_path,
             "camera_backend": self.camera_backend,
+            "rotation": self.rotation,
             "detector_backend": self.detector_backend,
             "error": self.error,
             "person_detected": self.person_detected,
@@ -269,11 +271,24 @@ class VisionService:
                 pass
         return self.frame_count, self._latest_jpeg
 
+    def set_rotation(self, rotation: int) -> int:
+        """Set camera rotation angle in degrees (0, 90, 180, 270)."""
+        normalized = (int(rotation) // 90 * 90) % 360
+        self.rotation = normalized
+        return self.rotation
+
     def _process_real_frame_sync(self, frame: Any) -> Tuple[Optional[Dict[str, Any]], Optional[bytes]]:
-        """Run HOG person detection and draw overlay on frame (called in thread executor)."""
+        """Run optional rotation, HOG person detection, and draw overlay on frame (called in thread executor)."""
         cv2 = self._cv2
         if cv2 is None or frame is None:
             return None, None
+
+        if self.rotation == 90:
+            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        elif self.rotation == 180:
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
+        elif self.rotation == 270:
+            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
         h, w = frame.shape[:2]
         target = None

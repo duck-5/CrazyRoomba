@@ -56,6 +56,7 @@ class RoombaConfig:
     # Camera / Perception
     camera_enabled: bool = os.getenv("ROOMBA_CAMERA_ENABLED", "false").lower() in ("true", "1", "yes")
     camera_device_index: int = int(os.getenv("ROOMBA_CAMERA_INDEX", "0"))
+    camera_rotation: int = int(os.getenv("ROOMBA_CAMERA_ROTATION", "180"))
 
     @property
     def telemetry_interval(self) -> float:

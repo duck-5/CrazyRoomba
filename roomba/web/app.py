@@ -350,6 +350,13 @@ def create_app() -> FastAPI:
         await controller.vision.stop()
         return controller.vision.get_status()
 
+    @application.post("/api/camera/rotate")
+    async def api_camera_rotate(rotation: Optional[int] = None):
+        """Rotate camera feed (defaults to toggling 180°)."""
+        next_rot = ((controller.vision.rotation + 180) % 360) if rotation is None else rotation
+        controller.vision.set_rotation(next_rot)
+        return controller.vision.get_status()
+
     @application.get("/api/camera/snapshot")
     async def api_camera_snapshot():
         """Return a single annotated JPEG frame from the camera."""
