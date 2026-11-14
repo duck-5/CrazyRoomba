@@ -48,8 +48,30 @@ def test_nms_boxes_logic():
 
     # 4. Color lookup
     assert get_color_for_label("cat") == (0, 165, 255)
+    assert get_color_for_label("dog") == (255, 178, 50)
     assert get_color_for_label("person") == (0, 230, 118)
     assert get_color_for_label("unknown_thing") == (180, 180, 180)
+
+
+def test_per_class_nms_preserves_overlapping_distinct_categories():
+    """Verify per-class NMS preserves overlapping boxes of different classes (e.g. Person + Cat)."""
+    # Box 0: Person (0, 0, 100, 100), score 0.92, class 0
+    # Box 1: Person duplicate (3, 3, 95, 95), score 0.65, class 0 (should be suppressed)
+    # Box 2: Cat on lap (10, 10, 80, 80), score 0.88, class 15 (should NOT be suppressed by Person!)
+    boxes = [(0, 0, 100, 100), (3, 3, 95, 95), (10, 10, 80, 80)]
+    scores = [0.92, 0.65, 0.88]
+    class_ids = [0, 0, 15]
+
+    # With class_ids: duplicate person box 1 suppressed, cat box 2 preserved!
+    keep_with_classes = nms_boxes(boxes, scores, iou_threshold=0.45, class_ids=class_ids)
+    assert 0 in keep_with_classes
+    assert 2 in keep_with_classes
+    assert 1 not in keep_with_classes
+    assert len(keep_with_classes) == 2
+
+    # Without class_ids (class-agnostic): cat box 2 would be wiped out
+    keep_agnostic = nms_boxes(boxes, scores, iou_threshold=0.45)
+    assert keep_agnostic == [0]
 
 
 def test_yolox_coco_multi_object_cat_and_person_detection():
@@ -234,6 +256,52 @@ async def test_wander_mode_proactive_ir_and_vision_avoidance():
 
 
 @pytest.mark.asyncio
+async def test_pet_companion_mode_tracks_configured_dog():
+    """Verify PetCompanionMode with target_species='dog' tracks dog even if cat is also present."""
+    ctrl = controller
+    mode = PetCompanionMode(target_species="dog", safe_bbox_width=0.25)
+
+    # Cat is to the left (x=0.2), Dog is to the right (x=0.8)
+    ctx_dog = RobotContext(
+        controller=ctrl,
+        telemetry={"bumps_and_drops": {}, "light_bumpers": {}},
+        perception={
+            "target_cat": {"x_center": 0.2, "bbox_width": 0.20, "confidence": 0.90},
+            "target_dog": {"x_center": 0.8, "bbox_width": 0.20, "confidence": 0.85},
+            "detected_objects": [
+                {"label": "cat", "x_center": 0.2, "bbox_width": 0.20, "confidence": 0.90},
+                {"label": "dog", "x_center": 0.8, "bbox_width": 0.20, "confidence": 0.85},
+            ],
+        },
+    )
+    cmd = await mode.update(ctx_dog)
+    # Target dog is on the right (x=0.8 > 0.5), so robot must steer right (left speed > right speed)
+    assert cmd.left > cmd.right
+
+
+@pytest.mark.asyncio
+async def test_wander_mode_cliff_in_turn_and_backup_states():
+    """Verify WanderMode immediately halts and backs away from cliff even during TURN state."""
+    ctrl = controller
+    wander = WanderMode(cruise_speed=150)
+
+    # Put robot in TURN state
+    wander._state = "TURN"
+    wander._state_timer = 99999999.0
+
+    # A cliff is suddenly detected during the turn
+    ctx_cliff = RobotContext(
+        controller=ctrl,
+        telemetry={"cliffs": {"cliff_front_left": True}, "bumps_and_drops": {}, "light_bumpers": {}},
+        perception={},
+    )
+    cmd = await wander.update(ctx_cliff)
+    # Must immediately transition to BACKUP and drive backwards, not continue turning off the cliff!
+    assert wander._state == "BACKUP"
+    assert cmd.left < 0 and cmd.right < 0
+
+
+@pytest.mark.asyncio
 async def test_ai_brain_local_and_scene_summary():
     """Verify AIBrainService local intent resolution, scene summary, and action execution."""
     brain = AIBrainService(controller=controller)
@@ -318,4 +386,69 @@ def test_api_ai_and_vision_endpoints(client):
     assert vc.json()["intent"] == "mode_pet"
     assert controller.mode_manager.active_name == "pet_companion"
 
+    # Voice command for dog
+    vc_dog = client.post("/api/voice/command", json={"text": "target dog", "execute": True, "speak_reply": False})
+    assert vc_dog.status_code == 200
+    assert vc_dog.json()["intent"] == "target_dog"
+    assert controller.vision.target_class == "dog"
+
+    # Perception status reports active for pet_companion
+    ps = client.get("/api/perception/status")
+    assert ps.status_code == 200
+    assert ps.json()["vision_active"] is True
+
     client.post("/api/disconnect")
+
+
+@pytest.mark.asyncio
+async def test_ai_brain_gemini_async_client_non_blocking():
+    """Verify AIBrainService uses async client.aio.models when available."""
+    brain = AIBrainService(controller=controller)
+    brain.gemini_api_key = "fake-key"
+    brain.provider = "gemini"
+
+    fake_response = MagicMock()
+    fake_response.text = "All clear in front. [ACTION:mode_wander]"
+
+    fake_client = MagicMock()
+    fake_client.aio.models.generate_content = AsyncMock(return_value=fake_response)
+
+    with patch("roomba.ai.brain._GENAI_AVAILABLE", True), \
+         patch("roomba.ai.brain.genai.Client", return_value=fake_client):
+        res = await brain.ask("start wandering", include_vision=False, execute=True)
+        assert res["ok"] is True
+        assert res["intent"] == "mode_wander"
+        assert res["executed"] is True
+        assert "[ACTION:" not in res["reply"]
+        assert controller.mode_manager.active_name == "wander"
+
+
+@pytest.mark.asyncio
+async def test_ai_brain_ollama_provider_integration():
+    """Verify AIBrainService queries Ollama HTTP endpoint when provider is ollama."""
+    brain = AIBrainService(controller=controller)
+    brain.provider = "ollama"
+
+    fake_resp_data = {"response": "The room has a cat sitting by the couch. [ACTION:mode_pet,species:cat]"}
+    mock_post_res = MagicMock()
+    mock_post_res.status_code = 200
+    mock_post_res.json.return_value = fake_resp_data
+
+    mock_async_client = AsyncMock()
+    mock_async_client.__aenter__.return_value.post = AsyncMock(return_value=mock_post_res)
+
+    with patch("roomba.ai.brain.httpx.AsyncClient", return_value=mock_async_client):
+        # 1. Ask query with action extraction
+        res = await brain.ask("play with my cat", include_vision=False, execute=True)
+        assert res["ok"] is True
+        assert res["provider"] == "ollama"
+        assert res["intent"] == "mode_pet"
+        assert res["executed"] is True
+        assert "[ACTION:" not in res["reply"]
+        assert controller.mode_manager.active_name == "pet_companion"
+
+        # 2. Scene analysis with Ollama
+        scene_res = await brain.analyze_scene("Describe surroundings")
+        assert scene_res["ok"] is True
+        assert scene_res["provider"] == "ollama"
+        assert "cat sitting" in scene_res["description"]

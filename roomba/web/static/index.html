@@ -528,6 +528,18 @@
         <span id="camera-status-badge" class="badge">CHECKING</span>
       </div>
 
+      <!-- Camera Connection Bar -->
+      <div class="camera-connect-bar">
+        <select id="select-camera-source" class="sound-select" aria-label="Camera Source">
+          <option value="0">📷 Camera 0 (Default / Pi)</option>
+          <option value="1">📷 Camera 1 (USB)</option>
+          <option value="2">📷 Camera 2</option>
+          <option value="mock">🧪 Mock Camera</option>
+        </select>
+        <button id="btn-connect-camera" class="btn btn-primary btn-sm" type="button">🔌 Connect</button>
+        <button id="btn-disconnect-camera" class="btn btn-secondary btn-sm" type="button">⏹️ Disconnect</button>
+      </div>
+
       <!-- Camera Error / Offline State -->
       <div id="camera-error-box" class="hw-error-box" style="display: none;">
         <p id="camera-error-text" class="hw-error-text">No camera detected.</p>
@@ -543,6 +555,7 @@
         <div class="camera-overlay-bar">
           <span id="person-detect-badge" class="badge">NO PERSON</span>
           <span id="cat-detect-badge" class="badge badge-warning" style="display: none;">🐱 CAT 0%</span>
+          <span id="dog-detect-badge" class="badge badge-info" style="display: none;">🐕 DOG 0%</span>
           <span id="camera-fps-text" class="camera-fps-text">-- FPS</span>
         </div>
       </div>

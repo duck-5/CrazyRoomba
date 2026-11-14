@@ -29,7 +29,6 @@ async def test_behavior_manager_registry(controller):
     assert "wander" in names
     assert "follow_person" in names
     assert "pet_companion" in names
-    assert "pet_companion" in names
     assert bm.active_name == "manual"
 
 

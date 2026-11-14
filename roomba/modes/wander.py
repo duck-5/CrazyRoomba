@@ -36,24 +36,33 @@ class WanderMode(BaseMode):
     async def update(self, context: RobotContext) -> Optional[DriveCommand]:
         now = time.monotonic()
 
-        # 1. Emergency safety: physical bumps or cliffs
+        # 1. Critical safety override: Cliff or wheel drop detection in ANY state
+        if context.is_cliff_detected or context.is_wheel_dropped:
+            self._state = "BACKUP"
+            self._state_timer = now + 1.0
+            self._turn_direction = random.choice([-1, 1])
+            context.controller.log_event("warn", "WanderMode: Cliff or drop detected, backing away immediately")
+            return DriveCommand.backward(self.cruise_speed)
+
+        # 2. Emergency bumper collision: transition to BACKUP if not already backing up
+        if context.is_bumped and self._state != "BACKUP":
+            self._state = "BACKUP"
+            self._state_timer = now + 0.8
+            bump_l = context.bumps_and_drops.get("bump_left", False)
+            bump_r = context.bumps_and_drops.get("bump_right", False)
+            if bump_l and not bump_r:
+                self._turn_direction = 1  # turn right
+            elif bump_r and not bump_l:
+                self._turn_direction = -1  # turn left
+            else:
+                self._turn_direction = random.choice([-1, 1])
+
+            context.controller.log_event("warn", "WanderMode: Obstacle hit, backing up")
+            return DriveCommand.backward(self.cruise_speed)
+
+        # State-driven autonomous navigation
         if self._state == "FORWARD":
-            if context.is_bumped or context.is_cliff_detected:
-                self._state = "BACKUP"
-                self._state_timer = now + 0.8
-                bump_l = context.bumps_and_drops.get("bump_left", False)
-                bump_r = context.bumps_and_drops.get("bump_right", False)
-                if bump_l and not bump_r:
-                    self._turn_direction = 1  # turn right
-                elif bump_r and not bump_l:
-                    self._turn_direction = -1  # turn left
-                else:
-                    self._turn_direction = random.choice([-1, 1])
-
-                context.controller.log_event("warn", "WanderMode: Obstacle hit, backing up")
-                return DriveCommand.backward(self.cruise_speed)
-
-            # 2. Proactive non-contact obstacle avoidance: IR Light Bumpers
+            # Proactive non-contact obstacle avoidance: IR Light Bumpers
             lb: Dict[str, Any] = context.telemetry.get("light_bumpers", {})
             center_blocked = lb.get("center_left") or lb.get("center_right")
             left_blocked = lb.get("front_left") or lb.get("left")
@@ -76,7 +85,7 @@ class WanderMode(BaseMode):
                 # Soft curve away from right wall/obstacle
                 return DriveCommand(left=max(40, self.cruise_speed // 2), right=self.cruise_speed)
 
-            # 3. Vision-based obstacle avoidance
+            # Vision-based obstacle avoidance
             perception: Dict[str, Any] = context.perception or {}
             detected: List[Dict[str, Any]] = perception.get("detected_objects", [])
             for obj in detected:

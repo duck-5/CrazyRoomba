@@ -36,12 +36,18 @@ def parse_voice_command(text: str) -> Tuple[Optional[str], Dict[str, Any]]:
         return "arm", {}
 
     # Autonomous Modes
+    if any(k in t for k in ("follow dog", "track dog", "find dog", "dog companion", "play with dog")):
+        return "mode_pet", {"species": "dog"}
     if any(k in t for k in ("follow cat", "track cat", "pet companion", "play with cat", "cat mode", "follow pet", "find cat")):
-        return "mode_pet", {}
-    if any(k in t for k in ("target cat", "look for cat")):
+        return "mode_pet", {"species": "cat"}
+    if any(k in t for k in ("target cat", "look for cat", "focus on cat")):
         return "target_cat", {}
-    if any(k in t for k in ("target person", "target me")):
+    if any(k in t for k in ("target dog", "look for dog", "focus on dog")):
+        return "target_dog", {}
+    if any(k in t for k in ("target person", "target me", "focus on me")):
         return "target_person", {}
+    if any(k in t for k in ("target any", "target all")):
+        return "target_any", {}
     if any(k in t for k in ("follow me", "follow person", "follow mode", "track me", "come with me")):
         return "mode_follow", {}
     if any(k in t for k in ("wander", "explore", "roam")):
@@ -121,20 +127,31 @@ async def execute_voice_command(controller: Any, text: str) -> Dict[str, Any]:
             return {"recognized": True, "intent": intent, "executed": True, "reply": "Robot disarmed."}
 
         if intent == "mode_pet":
+            species = "dog" if "dog" in text.lower() else "cat"
             if hasattr(controller, "vision") and hasattr(controller.vision, "set_target_class"):
-                controller.vision.set_target_class("cat")
+                controller.vision.set_target_class(species)
             await controller.set_operating_mode("pet_companion")
-            return {"recognized": True, "intent": intent, "executed": True, "reply": "Switching to pet companion mode."}
+            return {"recognized": True, "intent": intent, "executed": True, "reply": f"Switching to pet companion mode for {species}."}
 
         if intent == "target_cat":
             if hasattr(controller, "vision") and hasattr(controller.vision, "set_target_class"):
                 controller.vision.set_target_class("cat")
             return {"recognized": True, "intent": intent, "executed": True, "reply": "Vision target set to cat."}
 
+        if intent == "target_dog":
+            if hasattr(controller, "vision") and hasattr(controller.vision, "set_target_class"):
+                controller.vision.set_target_class("dog")
+            return {"recognized": True, "intent": intent, "executed": True, "reply": "Vision target set to dog."}
+
         if intent == "target_person":
             if hasattr(controller, "vision") and hasattr(controller.vision, "set_target_class"):
                 controller.vision.set_target_class("person")
             return {"recognized": True, "intent": intent, "executed": True, "reply": "Vision target set to person."}
+
+        if intent == "target_any":
+            if hasattr(controller, "vision") and hasattr(controller.vision, "set_target_class"):
+                controller.vision.set_target_class("any")
+            return {"recognized": True, "intent": intent, "executed": True, "reply": "Vision target set to any object."}
 
         if intent == "mode_follow":
             if hasattr(controller, "vision") and hasattr(controller.vision, "set_target_class"):

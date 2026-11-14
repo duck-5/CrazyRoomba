@@ -66,11 +66,13 @@ def nms_boxes(
     boxes: List[Tuple[int, int, int, int]],
     scores: List[float],
     iou_threshold: float = 0.45,
+    class_ids: Optional[List[int]] = None,
 ) -> List[int]:
     """
     Pure-Python / NumPy greedy Non-Maximum Suppression (NMS).
     Takes boxes in (x, y, w, h) format and scores, returns indices to keep.
-    Resilient and works without requiring cv2.dnn.NMSBoxes.
+    If class_ids is provided, suppression is performed per-class so that overlapping
+    objects of different classes (e.g. person holding cat, cat on couch) are not suppressed.
     """
     if not boxes or not scores:
         return []
@@ -89,6 +91,11 @@ def nms_boxes(
 
         remaining: List[int] = []
         for i in idxs:
+            # Per-class NMS: if class_ids provided, never suppress a different class
+            if class_ids is not None and class_ids[i] != class_ids[current]:
+                remaining.append(i)
+                continue
+
             ix1, iy1, iw, ih = boxes[i]
             ix2, iy2 = ix1 + iw, iy1 + ih
             candidate_area = max(0, iw) * max(0, ih)

@@ -4,7 +4,7 @@ Coordinates high-level scene understanding, conversational voice interaction,
 visual question answering, pet detection reasoning, and autonomous action execution.
 
 Supported AI backends:
-1. Google Gemini Multimodal VLM (gemini-2.5-flash) via google-genai SDK (cloud / zero-load on Pi 5)
+1. Google Gemini Multimodal VLM (gemini-3.8-flash) via google-genai SDK (cloud / zero-load on Pi 5)
 2. Local Ollama HTTP endpoint (local / LAN LLMs)
 3. Built-in Deterministic Physical AI Agent (resilient local fallback with full offline operation)
 """
@@ -15,8 +15,18 @@ import os
 import re
 import time
 import json
+import base64
+import asyncio
+import inspect
 import logging
 from typing import Optional, Dict, Any, List, Tuple
+
+try:
+    import httpx
+    _HTTPX_AVAILABLE = True
+except ImportError:
+    httpx = None
+    _HTTPX_AVAILABLE = False
 
 from roomba.config import config
 
@@ -40,8 +50,16 @@ class AIBrainService:
         self.gemini_api_key: Optional[str] = (
             os.getenv("GEMINI_API_KEY") or getattr(config, "gemini_api_key", None)
         )
-        self.model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        model_env = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+        # Upgrade deprecated models if requested
+        if model_env.startswith(("gemini-2.5", "gemini-2.0", "gemini-1.5")):
+            logger.info(f"Deprecated Gemini model '{model_env}' requested; upgrading to 'gemini-3.8-flash'")
+            model_env = "gemini-3.8-flash"
+        self.model: str = model_env
+
         self.ollama_url: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
+        self.ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3")
+        self.ollama_vision_model: str = os.getenv("OLLAMA_VISION_MODEL", "llava")
         self.history: List[Dict[str, Any]] = []
 
         # Auto-detect active AI provider
@@ -81,6 +99,39 @@ class AIBrainService:
         if len(self.history) > 25:
             self.history.pop(0)
 
+    async def _call_gemini_generate_content(self, client: Any, contents: Any, config: Any) -> Any:
+        """Call Gemini generate_content asynchronously using aio client or executor fallback."""
+        aio_client = getattr(client, "aio", None)
+        if aio_client is not None and hasattr(aio_client, "models"):
+            res = aio_client.models.generate_content(
+                model=self.model,
+                contents=contents,
+                config=config,
+            )
+            if inspect.isawaitable(res):
+                return await res
+            if hasattr(res, "text") and isinstance(res.text, str):
+                return res
+            if hasattr(client, "models"):
+                return await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: client.models.generate_content(
+                        model=self.model,
+                        contents=contents,
+                        config=config,
+                    ),
+                )
+            return res
+
+        return await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: client.models.generate_content(
+                model=self.model,
+                contents=contents,
+                config=config,
+            ),
+        )
+
     async def analyze_scene(self, prompt: str = "Describe the room and identify any people, cats, or obstacles") -> Dict[str, Any]:
         """
         Multimodal scene analysis of the latest camera snapshot.
@@ -97,22 +148,20 @@ class AIBrainService:
                 system_instruction = (
                     "You are CrazyRoomba, an intelligent autonomous Roomba 960 robot equipped with a Raspberry Pi 5 "
                     "and camera. Analyze this camera view. State what you observe concisely (2-3 sentences), identify "
-                    "any people, pets (especially cats), furniture, or open pathways, and give a recommendation."
+                    "any people, pets (especially cats and dogs), furniture, or open pathways, and give a recommendation."
                 )
                 contents = []
                 if jpeg_bytes:
                     contents.append(genai_types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"))
                 contents.append(prompt)
-                response = client.models.generate_content(
-                    model=self.model,
-                    contents=contents,
-                    config=genai_types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=0.2,
-                        max_output_tokens=250,
-                    ),
+                config_vlm = genai_types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.2,
+                    max_output_tokens=250,
                 )
-                text = response.text.strip() if response.text else "Scene analyzed."
+
+                response = await self._call_gemini_generate_content(client, contents, config_vlm)
+                text = response.text.strip() if (response and hasattr(response, "text") and response.text) else "Scene analyzed."
                 self._record_history(prompt, text, "scene_analysis", "gemini")
                 return {
                     "ok": True,
@@ -123,7 +172,36 @@ class AIBrainService:
             except Exception as e:
                 logger.warning(f"Gemini scene analysis error: {e}, falling back to local reasoning")
 
-        # 2. Local Physical AI Scene Summarizer
+        # 2. Try Ollama local LLM / VLM if configured
+        if self.provider == "ollama" and _HTTPX_AVAILABLE:
+            try:
+                images_b64 = [base64.b64encode(jpeg_bytes).decode("ascii")] if jpeg_bytes else []
+                payload = {
+                    "model": self.ollama_vision_model if images_b64 else self.ollama_model,
+                    "prompt": (
+                        f"You are CrazyRoomba, an intelligent autonomous Roomba robot with camera. "
+                        f"{prompt}. Keep answer to 2-3 sentences."
+                    ),
+                    "stream": False,
+                }
+                if images_b64:
+                    payload["images"] = images_b64
+                async with httpx.AsyncClient(timeout=10.0) as http_client:
+                    res = await http_client.post(f"{self.ollama_url}/api/generate", json=payload)
+                    if res.status_code == 200:
+                        data = res.json()
+                        text = data.get("response", "").strip() or "Scene analyzed."
+                        self._record_history(prompt, text, "scene_analysis", "ollama")
+                        return {
+                            "ok": True,
+                            "provider": "ollama",
+                            "description": text,
+                            "detected_objects": detected_objects,
+                        }
+            except Exception as e:
+                logger.warning(f"Ollama scene analysis error: {e}, falling back to local reasoning")
+
+        # 3. Local Physical AI Scene Summarizer
         summary = self._generate_local_scene_summary(detected_objects)
         self._record_history(prompt, summary, "scene_analysis", "local")
         return {
@@ -216,30 +294,71 @@ class AIBrainService:
                 labels_str = ", ".join(f"{o['label']}({int(o['confidence']*100)}%)" for o in detected) if detected else "none"
 
                 context_prompt = (
-                    f"You are the physical AI brain of a Roomba 960 running Raspberry Pi 5. "
+                    f"You are the Physical AI Brain of CrazyRoomba, an autonomous Roomba 960 robot running Raspberry Pi 5. "
                     f"Telemetry: battery={telemetry.get('battery_percent', 0):.0f}%, mode={active_mode}, "
                     f"detected objects=[{labels_str}].\n"
                     f"User says: '{q_clean}'.\n"
-                    f"Respond in 1-2 friendly sentences. If the user wants to follow someone, pet companion, wander, "
-                    f"or stop, confirm that action."
+                    f"Respond in 1-2 friendly sentences. If confirming or initiating a physical action, append an action tag "
+                    f"at the end in brackets, e.g. [ACTION:mode_pet,species:cat], [ACTION:mode_pet,species:dog], "
+                    f"[ACTION:mode_follow], [ACTION:mode_wander], [ACTION:stop], [ACTION:dock], [ACTION:clean], "
+                    f"[ACTION:target_cat], [ACTION:target_dog], [ACTION:target_person], or [ACTION:none]."
                 )
 
-                response = client.models.generate_content(
-                    model=self.model,
-                    contents=[context_prompt],
-                    config=genai_types.GenerateContentConfig(temperature=0.3, max_output_tokens=150),
-                )
-                if response.text:
+                config_ask = genai_types.GenerateContentConfig(temperature=0.3, max_output_tokens=150)
+                response = await self._call_gemini_generate_content(client, [context_prompt], config_ask)
+
+                if response and hasattr(response, "text") and response.text:
                     reply = response.text.strip()
+                    used_provider = "gemini"
                     used_provider = "gemini"
             except Exception as e:
                 logger.warning(f"Gemini text query failed: {e}, falling back to local intent reply")
 
-        # Step 3: Fallback local reply if Gemini didn't respond
+        elif self.provider == "ollama" and _HTTPX_AVAILABLE:
+            try:
+                telemetry = getattr(self.controller, "latest_telemetry", {}) or {}
+                active_mode = getattr(self.controller.mode_manager, "active_name", "manual") if self.controller else "manual"
+                detected = vision.detected_objects if vision else []
+                labels_str = ", ".join(f"{o['label']}({int(o['confidence']*100)}%)" for o in detected) if detected else "none"
+
+                prompt = (
+                    f"You are the Physical AI Brain of CrazyRoomba (Roomba 960 on Pi 5). "
+                    f"Battery={telemetry.get('battery_percent', 0):.0f}%, mode={active_mode}, objects=[{labels_str}]. "
+                    f"User: '{q_clean}'. Respond in 1-2 friendly sentences. "
+                    f"Append action tag at the end in brackets if relevant: [ACTION:mode_pet,species:cat], "
+                    f"[ACTION:mode_follow], [ACTION:mode_wander], [ACTION:stop], [ACTION:dock], or [ACTION:none]."
+                )
+                async with httpx.AsyncClient(timeout=10.0) as http_client:
+                    res = await http_client.post(
+                        f"{self.ollama_url}/api/generate",
+                        json={"model": self.ollama_model, "prompt": prompt, "stream": False},
+                    )
+                    if res.status_code == 200:
+                        data = res.json()
+                        resp_txt = data.get("response", "").strip()
+                        if resp_txt:
+                            reply = resp_txt
+                            used_provider = "ollama"
+            except Exception as e:
+                logger.warning(f"Ollama text query failed: {e}, falling back to local reasoning")
+
+        # Step 3: Extract any [ACTION:...] tag from LLM response
+        if reply:
+            action_match = re.search(r"\[ACTION:\s*([a-zA-Z0-9_]+)(?:,\s*species:([a-zA-Z0-9_]+))?\]", reply)
+            if action_match:
+                parsed_intent = action_match.group(1).strip()
+                if parsed_intent != "none":
+                    if intent is None:
+                        intent = parsed_intent
+                        if action_match.group(2):
+                            params["species"] = action_match.group(2).strip()
+                reply = re.sub(r"\[ACTION:[^\]]+\]", "", reply).strip()
+
+        # Step 4: Fallback local reply if neither Gemini nor Ollama responded
         if reply is None:
             reply = self._generate_local_reply(q_lower, intent)
 
-        # Step 4: Execute robot action if requested
+        # Step 5: Execute robot action if requested
         executed = False
         if execute and self.controller and intent:
             executed = await self._execute_intent_action(intent, params)
@@ -253,7 +372,7 @@ class AIBrainService:
             "intent": intent,
             "executed": executed,
             "provider": used_provider,
-            "model": self.model if used_provider == "gemini" else "rule-based-physical-ai",
+            "model": self.model if used_provider == "gemini" else (self.ollama_model if used_provider == "ollama" else "rule-based-physical-ai"),
         }
 
     def _parse_intent_local(self, text: str) -> Tuple[Optional[str], Dict[str, Any]]:
@@ -267,17 +386,19 @@ class AIBrainService:
             return "stop", {}
 
         # Pet Companion Mode (Cats / Dogs)
-        if re.search(r"\b(follow|track|find|look for|play with|companion)\b.*\b(cat|cats|kitten|kitty)\b", t) or \
-           any(k in t for k in ("follow cat", "track cat", "find cat", "cat companion", "play with cat", "pet mode", "pet companion", "follow pet", "look for cat")):
-            return "mode_pet", {"species": "cat"}
-        if re.search(r"\b(follow|track|find|look for|play with|companion)\b.*\b(dog|dogs|puppy)\b", t) or \
-           any(k in t for k in ("follow dog", "track dog", "find dog", "dog companion")):
+        if re.search(r"\b(follow|track|find|look for|play with|companion|escort|watch)\b.*\b(dog|dogs|puppy|pup|canine)\b", t) or \
+           any(k in t for k in ("follow dog", "track dog", "find dog", "dog companion", "play with dog")):
             return "mode_pet", {"species": "dog"}
+        if re.search(r"\b(follow|track|find|look for|play with|companion|escort|watch)\b.*\b(cat|cats|kitten|kitty|feline)\b", t) or \
+           any(k in t for k in ("follow cat", "track cat", "find cat", "cat companion", "play with cat", "pet mode", "pet companion", "follow pet", "look for cat", "cat mode", "kitten")):
+            return "mode_pet", {"species": "cat"}
 
         # Target selection
-        if any(k in t for k in ("target cat", "focus on cat", "switch to cat")):
+        if any(k in t for k in ("target cat", "focus on cat", "switch to cat", "look for cat")):
             return "target_cat", {}
-        if any(k in t for k in ("target person", "focus on person", "focus on me", "target human")):
+        if any(k in t for k in ("target dog", "focus on dog", "switch to dog", "look for dog")):
+            return "target_dog", {}
+        if any(k in t for k in ("target person", "focus on person", "focus on me", "target me", "target human")):
             return "target_person", {}
         if any(k in t for k in ("target any", "target all")):
             return "target_any", {}
@@ -287,7 +408,7 @@ class AIBrainService:
             return "mode_follow", {}
 
         # Wander / Explore
-        if any(k in t for k in ("wander", "explore", "roam", "patrol", "scout", "look around room")):
+        if any(k in t for k in ("wander", "explore", "roam", "patrol", "scout", "look around room", "cruise", "avoid obstacles")):
             return "mode_wander", {}
 
         # Manual Mode
@@ -318,8 +439,12 @@ class AIBrainService:
             return "Switching back to manual teleop mode."
         elif intent == "target_cat":
             return "Vision tracking target set to cat."
+        elif intent == "target_dog":
+            return "Vision tracking target set to dog."
         elif intent == "target_person":
             return "Vision tracking target set to person."
+        elif intent == "target_any":
+            return "Vision tracking target set to any object."
         elif intent == "dock":
             return "Seeking charging dock."
         elif intent == "clean":
@@ -372,6 +497,10 @@ class AIBrainService:
             elif intent == "target_cat":
                 if hasattr(c, "vision") and hasattr(c.vision, "set_target_class"):
                     c.vision.set_target_class("cat")
+                return True
+            elif intent == "target_dog":
+                if hasattr(c, "vision") and hasattr(c.vision, "set_target_class"):
+                    c.vision.set_target_class("dog")
                 return True
             elif intent == "target_person":
                 if hasattr(c, "vision") and hasattr(c.vision, "set_target_class"):

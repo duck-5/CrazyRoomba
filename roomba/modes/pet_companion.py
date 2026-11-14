@@ -51,36 +51,32 @@ class PetCompanionMode(BaseMode):
     async def update(self, context: RobotContext) -> Optional[DriveCommand]:
         now = time.monotonic()
 
-        # Emergency obstacle protection: bumper or cliff
-        if context.is_bumped or context.is_cliff_detected:
+        # Emergency obstacle protection: bumper, cliff, or wheel drop
+        if context.is_bumped or context.is_cliff_detected or context.is_wheel_dropped:
             context.controller.log_event("warn", "PetCompanion: Bump/cliff triggered, stopping safely")
             return DriveCommand.stop()
 
-        # Proactive non-contact obstacle avoidance with IR Light Bumpers
-        lb = context.telemetry.get("light_bumpers", {})
-        front_blocked = lb.get("center_left") or lb.get("center_right")
-        left_blocked = lb.get("front_left") or lb.get("left")
-        right_blocked = lb.get("front_right") or lb.get("right")
-
-        if front_blocked:
-            return DriveCommand(left=-60, right=-60)
-        elif left_blocked:
-            return DriveCommand.spin_right(80)
-        elif right_blocked:
-            return DriveCommand.spin_left(80)
-
-        # Check perception for pet target
+        # Check perception for matching pet target (cat, dog, or any pet)
         perception = context.perception or {}
-        target = perception.get("target_cat")
+        species = self.target_species.lower().strip()
+        target = None
+
+        if species in ("cat", "dog"):
+            target = perception.get(f"target_{species}")
+
         if not target or target.get("confidence", 0) < 0.20:
             target_obj = perception.get("target_object")
-            if target_obj and target_obj.get("label") in ("cat", "dog"):
+            if target_obj and (target_obj.get("label") == species or (species in ("pet", "any") and target_obj.get("label") in ("cat", "dog"))):
                 target = target_obj
+
+        if not target:
+            target = perception.get("target_cat") or perception.get("target_dog")
 
         # Fallback to any detected pet if specific target not set
         if not target and "detected_objects" in perception:
             for obj in perception["detected_objects"]:
-                if obj.get("label") in ("cat", "dog") and obj.get("confidence", 0) > 0.20:
+                lbl = obj.get("label", "").lower()
+                if (lbl == species or (species in ("pet", "any") and lbl in ("cat", "dog"))) and obj.get("confidence", 0) > 0.15:
                     target = obj
                     break
 
@@ -104,9 +100,22 @@ class PetCompanionMode(BaseMode):
             angular_velocity = int(steering_error * self.turn_gain)
 
             # Distance logic:
-            # If pet comes too close (e.g. stalking the robot), back away playfully!
+            # If pet comes too close (e.g. stalking the robot), back away playfully with heading tracking!
             if bbox_width > self.retreat_bbox_width:
                 return DriveCommand(left=-70 + angular_velocity, right=-70 - angular_velocity).clamp()
+
+            # Proactive non-contact obstacle avoidance with IR Light Bumpers
+            lb = context.telemetry.get("light_bumpers", {})
+            front_blocked = lb.get("center_left") or lb.get("center_right")
+            left_blocked = lb.get("front_left") or lb.get("left")
+            right_blocked = lb.get("front_right") or lb.get("right")
+
+            if front_blocked:
+                return DriveCommand(left=-60, right=-60)
+            elif left_blocked:
+                return DriveCommand.spin_right(80)
+            elif right_blocked:
+                return DriveCommand.spin_left(80)
 
             distance_error = self.safe_bbox_width - bbox_width
             linear_velocity = int(distance_error * self.distance_gain)
@@ -119,6 +128,19 @@ class PetCompanionMode(BaseMode):
             left_spd = linear_velocity + angular_velocity
             right_spd = linear_velocity - angular_velocity
             return DriveCommand(left=left_spd, right=right_spd).clamp()
+
+        # Proactive non-contact obstacle avoidance when searching
+        lb = context.telemetry.get("light_bumpers", {})
+        front_blocked = lb.get("center_left") or lb.get("center_right")
+        left_blocked = lb.get("front_left") or lb.get("left")
+        right_blocked = lb.get("front_right") or lb.get("right")
+
+        if front_blocked:
+            return DriveCommand(left=-60, right=-60)
+        elif left_blocked:
+            return DriveCommand.spin_right(80)
+        elif right_blocked:
+            return DriveCommand.spin_left(80)
 
         # 2. Lost target: Gentle search spin
         time_since_seen = now - self._last_seen_time

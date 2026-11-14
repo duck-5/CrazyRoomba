@@ -1320,10 +1320,14 @@ class RoombaCockpit {
     this.btnMockCamera = document.getElementById("btn-mock-camera");
     this.btnRotateCamera = document.getElementById("btn-rotate-camera");
     this.btnRefreshCamera = document.getElementById("btn-refresh-camera");
+    this.selectCameraSource = document.getElementById("select-camera-source");
+    this.btnConnectCamera = document.getElementById("btn-connect-camera");
+    this.btnDisconnectCamera = document.getElementById("btn-disconnect-camera");
     this.cameraFeedBox = document.getElementById("camera-feed-box");
     this.cameraStreamImg = document.getElementById("camera-stream-img");
     this.personDetectBadge = document.getElementById("person-detect-badge");
     this.catDetectBadge = document.getElementById("cat-detect-badge");
+    this.dogDetectBadge = document.getElementById("dog-detect-badge");
     this.cameraFpsText = document.getElementById("camera-fps-text");
     this.btnToggleFollow = document.getElementById("btn-toggle-follow");
     this.btnTogglePetCompanion = document.getElementById("btn-toggle-pet-companion");
@@ -1367,6 +1371,24 @@ class RoombaCockpit {
     }
     if (this.btnRefreshCamera) {
       this.btnRefreshCamera.addEventListener("click", () => this.retryCamera());
+    }
+    if (this.btnConnectCamera) {
+      this.btnConnectCamera.addEventListener("click", async () => {
+        const val = this.selectCameraSource ? this.selectCameraSource.value : "0";
+        if (val === "mock") {
+          await this.retryCamera(true);
+        } else {
+          const idx = parseInt(val, 10) || 0;
+          await this._apiPost("/api/camera/retry", { device_index: idx, mock: false });
+          await this.refreshHardwareStatus();
+        }
+      });
+    }
+    if (this.btnDisconnectCamera) {
+      this.btnDisconnectCamera.addEventListener("click", async () => {
+        await this._apiPost("/api/camera/stop", {});
+        await this.refreshHardwareStatus();
+      });
     }
     if (this.btnMockCamera) {
       this.btnMockCamera.addEventListener("click", () => this.enableMockCamera());
@@ -1524,6 +1546,15 @@ class RoombaCockpit {
           this.catDetectBadge.style.display = "inline-flex";
         } else {
           this.catDetectBadge.style.display = "none";
+        }
+      }
+      if (this.dogDetectBadge) {
+        if (cam.dog_detected && cam.target_dog) {
+          const dogPct = Math.round((cam.target_dog.confidence || 0) * 100);
+          this.dogDetectBadge.textContent = `🐕 DOG (${dogPct}%)`;
+          this.dogDetectBadge.style.display = "inline-flex";
+        } else {
+          this.dogDetectBadge.style.display = "none";
         }
       }
       if (this.detectedObjectsPills) {

@@ -68,6 +68,8 @@ class VisionService:
         self.target_person: Optional[Dict[str, Any]] = None
         self.cat_detected: bool = False
         self.target_cat: Optional[Dict[str, Any]] = None
+        self.dog_detected: bool = False
+        self.target_dog: Optional[Dict[str, Any]] = None
         self.target_object: Optional[Dict[str, Any]] = None
         self.detected_objects: List[Dict[str, Any]] = []
 
@@ -112,6 +114,8 @@ class VisionService:
             "target_person": self.target_person,
             "cat_detected": self.cat_detected,
             "target_cat": self.target_cat,
+            "dog_detected": self.dog_detected,
+            "target_dog": self.target_dog,
             "target_object": self.target_object,
             "detected_objects": self.detected_objects,
             "last_raw_confidence": round(self.last_raw_confidence, 3),
@@ -143,6 +147,8 @@ class VisionService:
         self.target_person = None
         self.cat_detected = False
         self.target_cat = None
+        self.dog_detected = False
+        self.target_dog = None
         self.target_object = None
         self.detected_objects = []
         self._consecutive_failures = 0
@@ -503,8 +509,8 @@ class VisionService:
                             cand_scores_list.append(score_val)
                             cand_class_ids.append(cls_idx)
 
-                # NMS suppression to eliminate redundant boxes
-                keep = nms_boxes(cand_boxes, cand_scores_list, iou_threshold=0.45)
+                # Per-class NMS suppression to eliminate redundant boxes without suppressing distinct categories
+                keep = nms_boxes(cand_boxes, cand_scores_list, iou_threshold=0.45, class_ids=cand_class_ids)
                 for k in keep[:10]:
                     cls_id = cand_class_ids[k]
                     label = COCO_CLASSES[cls_id] if cls_id < len(COCO_CLASSES) else f"class_{cls_id}"
@@ -554,7 +560,8 @@ class VisionService:
                         cand_scores_list.append(conf)
                         cand_class_ids.append(class_id)
 
-            keep = nms_boxes(cand_boxes, cand_scores_list, iou_threshold=0.45)
+            # Per-class NMS suppression
+            keep = nms_boxes(cand_boxes, cand_scores_list, iou_threshold=0.45, class_ids=cand_class_ids)
             for k in keep[:10]:
                 cls_id = cand_class_ids[k]
                 label = VOC_CLASSES[cls_id] if cls_id < len(VOC_CLASSES) else f"class_{cls_id}"
@@ -614,9 +621,10 @@ class VisionService:
         self.last_raw_confidence = raw_best_person_conf
         self.detected_objects = detected_objects
 
-        # Resolve person, cat, and active target objects
+        # Resolve person, cat, dog, and active target objects
         target_person = None
         target_cat = None
+        target_dog = None
 
         persons = [o for o in detected_objects if o["label"] == "person"]
         if persons:
@@ -634,11 +642,18 @@ class VisionService:
             self.cat_detected = False
         self.target_cat = target_cat
 
+        dogs = [o for o in detected_objects if o["label"] == "dog"]
+        if dogs:
+            target_dog = max(dogs, key=lambda o: o["confidence"])
+            self.dog_detected = True
+        else:
+            self.dog_detected = False
+        self.target_dog = target_dog
+
         if self.target_class == "cat":
             target_object = target_cat
         elif self.target_class == "dog":
-            dogs = [o for o in detected_objects if o["label"] == "dog"]
-            target_object = max(dogs, key=lambda o: o["confidence"]) if dogs else None
+            target_object = target_dog
         elif self.target_class == "any":
             target_object = max(detected_objects, key=lambda o: o["confidence"]) if detected_objects else None
         else:
@@ -672,6 +687,8 @@ class VisionService:
         summary_parts = []
         if self.cat_detected and self.target_cat:
             summary_parts.append(f"CAT {int(self.target_cat['confidence']*100)}%")
+        if self.dog_detected and self.target_dog:
+            summary_parts.append(f"DOG {int(self.target_dog['confidence']*100)}%")
         if self.person_detected and self.target_person:
             summary_parts.append(f"PERSON {int(self.target_person['confidence']*100)}%")
         summary_str = f" | {', '.join(summary_parts)}" if summary_parts else ""
@@ -718,14 +735,34 @@ class VisionService:
             "bbox": [int(max(0, (cat_x - cat_w / 2.0) * 320)), 140, int(cat_w * 320), 75],
         }
 
-        self.detected_objects = [sim_person, sim_cat]
+        # Simulated dog (playful puppy walking in foreground)
+        dog_x = 0.30 + 0.18 * math.sin(t * 0.5)
+        dog_w = 0.25 + 0.04 * math.cos(t * 0.3)
+        sim_dog = {
+            "class_id": 16,
+            "label": "dog",
+            "confidence": 0.86,
+            "x_center": round(dog_x, 4),
+            "bbox_width": round(dog_w, 4),
+            "bbox": [int(max(0, (dog_x - dog_w / 2.0) * 320)), 120, int(dog_w * 320), 80],
+        }
+
+        self.detected_objects = [sim_person, sim_cat, sim_dog]
         self.person_detected = True
         self.target_person = sim_person
         self.cat_detected = True
         self.target_cat = sim_cat
+        self.dog_detected = True
+        self.target_dog = sim_dog
         self.last_raw_confidence = 0.92
 
         if self.target_class == "cat":
+            self.target_object = sim_cat
+            active_target = sim_cat
+        elif self.target_class == "dog":
+            self.target_object = sim_dog
+            active_target = sim_dog
+        elif self.target_class == "any":
             self.target_object = sim_cat
             active_target = sim_cat
         else:
@@ -762,6 +799,11 @@ class VisionService:
             cv2.line(frame, (cbx + cbw - 14, cby - 8), (cbx + cbw - 8, cby), (0, 165, 255), 2)
             cv2.putText(frame, "CAT 89%", (cbx, max(16, cby - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 165, 255), 1)
 
+            # Draw Dog (Warm Sky Blue)
+            dbx, dby, dbw, dbh = sim_dog["bbox"]
+            cv2.rectangle(frame, (dbx, dby), (min(w - 1, dbx + dbw), min(h - 1, dby + dbh)), (255, 178, 50), 2)
+            cv2.putText(frame, "DOG 86%", (dbx, max(16, dby - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 178, 50), 1)
+
             cv2.putText(frame, "MOCK PHYSICAL AI SIM", (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 200, 220), 1)
 
             ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
@@ -785,10 +827,12 @@ class VisionService:
                         self.controller.set_perception_target({
                             "target_person": self.target_person,
                             "target_cat": self.target_cat,
+                            "target_dog": self.target_dog,
                             "target_object": self.target_object,
                             "detected_objects": self.detected_objects,
                             "person_detected": self.person_detected,
                             "cat_detected": self.cat_detected,
+                            "dog_detected": self.dog_detected,
                         })
                     self.frame_count += 1
                     self._consecutive_failures = 0
@@ -820,10 +864,12 @@ class VisionService:
                             "confidence": 0.0,
                         },
                         "target_cat": self.target_cat,
+                        "target_dog": self.target_dog,
                         "target_object": self.target_object,
                         "detected_objects": self.detected_objects,
                         "person_detected": self.person_detected,
                         "cat_detected": self.cat_detected,
+                        "dog_detected": self.dog_detected,
                     }
                     if self.controller:
                         self.controller.set_perception_target(perception_payload)
@@ -845,8 +891,9 @@ class VisionService:
                     conf_pct = round(self.last_raw_confidence * 100.0, 1)
                     person_str = "PERSON" if self.person_detected else "NO_PERSON"
                     cat_str = f", CAT {int(self.target_cat['confidence']*100)}%" if self.cat_detected and self.target_cat else ""
+                    dog_str = f", DOG {int(self.target_dog['confidence']*100)}%" if self.dog_detected and self.target_dog else ""
                     msg = (
-                        f"[VISION] Detection: {person_str} ({conf_pct:.1f}%){cat_str} "
+                        f"[VISION] Detection: {person_str} ({conf_pct:.1f}%){cat_str}{dog_str} "
                         f"(backend={self.detector_backend}, fps={self.fps:.1f}, objects={len(self.detected_objects)})"
                     )
                     print(msg, flush=True)

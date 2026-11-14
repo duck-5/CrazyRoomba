@@ -335,7 +335,7 @@ def create_app() -> FastAPI:
     async def api_perception_status():
         """Check if vision-dependent modes are active (Resource Management for Pi 5)."""
         active_mode = controller.mode_manager.active_name
-        is_active = active_mode in ["follow_person", "map_mode"]
+        is_active = active_mode in ["follow_person", "pet_companion", "wander", "map_mode"]
         return {"vision_active": is_active, "mode": active_mode}
 
     # --- Camera & Person Vision Endpoints ---

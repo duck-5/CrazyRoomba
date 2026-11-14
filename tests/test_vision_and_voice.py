@@ -181,6 +181,7 @@ def test_ui_contains_resilience_vision_and_voice_elements(client):
         "input-stt-command",
         "select-vision-target",
         "cat-detect-badge",
+        "dog-detect-badge",
         "btn-toggle-pet-companion",
         "btn-ask-ai",
         "btn-scene-ai",

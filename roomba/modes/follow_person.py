@@ -38,6 +38,8 @@ class FollowPersonMode(BaseMode):
     async def on_start(self, context: RobotContext) -> None:
         await super().on_start(context)
         self._last_seen_time = time.monotonic()
+        if hasattr(context.controller, "vision") and hasattr(context.controller.vision, "set_target_class"):
+            context.controller.vision.set_target_class("person")
         context.controller.log_event("info", "FollowPersonMode: Activated. Looking for target...")
 
     async def update(self, context: RobotContext) -> Optional[DriveCommand]:
