@@ -28,6 +28,8 @@ async def test_behavior_manager_registry(controller):
     assert "manual" in names
     assert "wander" in names
     assert "follow_person" in names
+    assert "pet_companion" in names
+    assert "pet_companion" in names
     assert bm.active_name == "manual"
 
 
@@ -114,6 +116,7 @@ async def test_modes_architecture(controller):
     assert "manual" in names
     assert "wander" in names
     assert "follow_person" in names
+    assert "pet_companion" in names
 
     await mm.set_active("wander")
     assert mm.active_name == "wander"

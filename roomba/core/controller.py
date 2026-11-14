@@ -28,9 +28,11 @@ from roomba.modes.manager import ModeManager
 from roomba.modes.manual import ManualMode
 from roomba.modes.wander import WanderMode
 from roomba.modes.follow_person import FollowPersonMode
+from roomba.modes.pet_companion import PetCompanionMode
 from roomba.perception.mapping import OccupancyGrid
 from roomba.perception.vision import VisionService
 from roomba.voice.service import VoiceService
+from roomba.ai.brain import AIBrainService
 from roomba.core.pi_battery import PiBatteryMonitor
 from roomba.config import config
 
@@ -75,14 +77,16 @@ class RobotController:
         # 2D Mapping (Walls, Voids, Free Space)
         self.grid_map = OccupancyGrid(cell_size_mm=50, width_cells=200, height_cells=200)
 
-        # Integrated Camera Vision & English Voice Services
+        # Integrated Camera Vision, English Voice, and Physical AI Brain Services
         self.vision = VisionService(controller=self)
         self.voice = VoiceService(controller=self)
+        self.ai_brain = AIBrainService(controller=self)
 
     def _init_modes(self) -> None:
         """Register autonomous operating mode scripts."""
         self.mode_manager.register(WanderMode(cruise_speed=150))
         self.mode_manager.register(FollowPersonMode(forward_speed=150))
+        self.mode_manager.register(PetCompanionMode())
 
     def _init_behaviors(self) -> None:
         """Backward-compatible alias for _init_modes."""

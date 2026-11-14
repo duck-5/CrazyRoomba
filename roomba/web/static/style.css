@@ -1726,3 +1726,69 @@ select:focus {
   color: var(--accent-cyan);
   min-height: 36px;
 }
+
+/* Physical AI & VLM Brain */
+.physical-ai-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-darker);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.ai-target-selector-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.detected-objects-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.detected-objects-title {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.detected-pills-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ai-quick-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.btn-ai-chip {
+  background: rgba(88, 166, 255, 0.1);
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  color: var(--accent-cyan);
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 0.70rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-ai-chip:hover {
+  background: rgba(88, 166, 255, 0.25);
+  border-color: var(--accent-cyan);
+  transform: translateY(-1px);
+}
+
+.badge-warning {
+  background: rgba(210, 153, 34, 0.25);
+  color: var(--accent-amber);
+  border-color: var(--accent-amber);
+}

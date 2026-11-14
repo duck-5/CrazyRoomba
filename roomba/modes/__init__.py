@@ -8,6 +8,7 @@ from roomba.modes.manager import ModeManager, BehaviorManager
 from roomba.modes.manual import ManualMode, ManualTeleopBehavior
 from roomba.modes.wander import WanderMode, WanderBehavior
 from roomba.modes.follow_person import FollowPersonMode, FollowPersonBehavior
+from roomba.modes.pet_companion import PetCompanionMode
 
 __all__ = [
     "BaseMode",
@@ -21,4 +22,5 @@ __all__ = [
     "WanderBehavior",
     "FollowPersonMode",
     "FollowPersonBehavior",
+    "PetCompanionMode",
 ]

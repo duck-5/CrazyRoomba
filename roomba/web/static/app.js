@@ -1323,8 +1323,18 @@ class RoombaCockpit {
     this.cameraFeedBox = document.getElementById("camera-feed-box");
     this.cameraStreamImg = document.getElementById("camera-stream-img");
     this.personDetectBadge = document.getElementById("person-detect-badge");
+    this.catDetectBadge = document.getElementById("cat-detect-badge");
     this.cameraFpsText = document.getElementById("camera-fps-text");
     this.btnToggleFollow = document.getElementById("btn-toggle-follow");
+    this.btnTogglePetCompanion = document.getElementById("btn-toggle-pet-companion");
+    this.selectVisionTarget = document.getElementById("select-vision-target");
+    this.detectedObjectsPills = document.getElementById("detected-objects-pills");
+
+    this.aiProviderBadge = document.getElementById("ai-provider-badge");
+    this.inputAiPrompt = document.getElementById("input-ai-prompt");
+    this.btnAskAi = document.getElementById("btn-ask-ai");
+    this.btnSceneAi = document.getElementById("btn-scene-ai");
+    this.aiReplyBox = document.getElementById("ai-reply-box");
 
     this.btnRetryVoice = document.getElementById("btn-retry-voice");
     this.speakerStatusPill = document.getElementById("speaker-status-pill");
@@ -1390,6 +1400,42 @@ class RoombaCockpit {
     if (this.btnBrowserStt) {
       this.btnBrowserStt.addEventListener("click", () => this.startBrowserSTT());
     }
+
+    if (this.selectVisionTarget) {
+      this.selectVisionTarget.addEventListener("change", (e) => {
+        this.setVisionTarget(e.target.value);
+      });
+    }
+    if (this.btnTogglePetCompanion) {
+      this.btnTogglePetCompanion.addEventListener("click", () => {
+        const isPet = document.querySelector('.btn-behavior[data-behavior="pet_companion"]')?.classList.contains("active-behavior");
+        this.setBehavior(isPet ? "manual" : "pet_companion");
+      });
+    }
+    if (this.btnAskAi) {
+      this.btnAskAi.addEventListener("click", () => {
+        const q = this.inputAiPrompt ? this.inputAiPrompt.value.trim() : "";
+        if (q) this.askAIBrain(q);
+      });
+    }
+    if (this.btnSceneAi) {
+      this.btnSceneAi.addEventListener("click", () => this.analyzeSceneAI());
+    }
+    if (this.inputAiPrompt) {
+      this.inputAiPrompt.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          const q = this.inputAiPrompt.value.trim();
+          if (q) this.askAIBrain(q);
+        }
+      });
+    }
+    document.querySelectorAll(".btn-ai-chip").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const q = btn.getAttribute("data-query");
+        if (this.inputAiPrompt) this.inputAiPrompt.value = q;
+        this.askAIBrain(q);
+      });
+    });
 
     this.refreshHardwareStatus();
     setInterval(() => this.refreshHardwareStatus(), 3000);
@@ -1463,13 +1509,36 @@ class RoombaCockpit {
       if (this.personDetectBadge) {
         if (cam.person_detected && cam.target_person) {
           const pct = Math.round((cam.target_person.confidence || 0) * 100);
-          this.personDetectBadge.textContent = `PERSON DETECTED (${pct}%)`;
+          this.personDetectBadge.textContent = `PERSON (${pct}%)`;
           this.personDetectBadge.className = "badge badge-success";
         } else {
           const rawPct = Math.round((cam.last_raw_confidence || 0) * 100);
-          this.personDetectBadge.textContent = rawPct > 0 ? `NO PERSON (max ${rawPct}%)` : "NO PERSON";
+          this.personDetectBadge.textContent = rawPct > 0 ? `NO PERSON (${rawPct}%)` : "NO PERSON";
           this.personDetectBadge.className = "badge";
         }
+      }
+      if (this.catDetectBadge) {
+        if (cam.cat_detected && cam.target_cat) {
+          const catPct = Math.round((cam.target_cat.confidence || 0) * 100);
+          this.catDetectBadge.textContent = `🐱 CAT (${catPct}%)`;
+          this.catDetectBadge.style.display = "inline-flex";
+        } else {
+          this.catDetectBadge.style.display = "none";
+        }
+      }
+      if (this.detectedObjectsPills) {
+        if (cam.detected_objects && cam.detected_objects.length > 0) {
+          this.detectedObjectsPills.innerHTML = cam.detected_objects.map((obj) => {
+            const pct = Math.round(obj.confidence * 100);
+            const icon = obj.label === "cat" ? "🐱" : (obj.label === "person" ? "👤" : (obj.label === "dog" ? "🐕" : "📦"));
+            return `<span class="pill pill-active">${icon} ${this._escapeHtml(obj.label)} ${pct}%</span>`;
+          }).join(" ");
+        } else {
+          this.detectedObjectsPills.innerHTML = `<span class="pill pill-dim">None detected</span>`;
+        }
+      }
+      if (this.selectVisionTarget && cam.target_class && document.activeElement !== this.selectVisionTarget) {
+        this.selectVisionTarget.value = cam.target_class;
       }
       if (this.cameraFpsText) {
         this.cameraFpsText.textContent = `${cam.fps || 0} FPS (${cam.detector_backend || "none"})`;
@@ -1484,7 +1553,13 @@ class RoombaCockpit {
       }
     }
 
-    // 3. Voice Hardware Pills
+    // 3. AI Brain Status
+    const ai = data.ai || {};
+    if (this.aiProviderBadge) {
+      this.aiProviderBadge.textContent = ai.provider ? `AI: ${ai.provider.toUpperCase()}` : "AI READY";
+    }
+
+    // 4. Voice Hardware Pills
     if (this.speakerStatusPill) {
       this.speakerStatusPill.textContent = tts.speaker_available ? `SPEAKER: OK (${tts.engine})` : `SPEAKER: NONE (Browser Fallback)`;
       this.speakerStatusPill.className = tts.speaker_available ? "pill pill-active" : "pill";
@@ -1492,6 +1567,69 @@ class RoombaCockpit {
     if (this.micStatusPill) {
       this.micStatusPill.textContent = stt.mic_available ? `MIC: OK (${stt.engine})` : `MIC: NONE (Browser Fallback)`;
       this.micStatusPill.className = stt.mic_available ? "pill pill-active" : "pill";
+    }
+  }
+
+  async setVisionTarget(targetClass) {
+    try {
+      const res = await fetch("/api/vision/target", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_class: targetClass }),
+      });
+      if (res.ok) {
+        this.logToConsole("info", `Vision target set to ${targetClass}`);
+      }
+    } catch (err) {
+      this.logToConsole("error", `Set vision target error: ${err.message}`);
+    }
+  }
+
+  async askAIBrain(query) {
+    if (this.aiReplyBox) {
+      this.aiReplyBox.textContent = `🧠 Thinking: "${query}"...`;
+      this.aiReplyBox.classList.add("voice-reply-active");
+    }
+    this.logToConsole("info", `[AI BRAIN QUERY] ${query}`);
+    try {
+      const res = await fetch("/api/ai/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: query, include_vision: true, execute: true, speak: true }),
+      });
+      const data = await res.json();
+      const reply = data.reply || (data.ok ? "Done." : "Query failed.");
+      if (this.aiReplyBox) {
+        this.aiReplyBox.textContent = `🤖 [${data.provider || "AI"}]: ${reply}`;
+      }
+      this.logToConsole("info", `[AI BRAIN REPLY] ${reply}`);
+    } catch (err) {
+      if (this.aiReplyBox) {
+        this.aiReplyBox.textContent = `AI Brain error: ${err.message}`;
+      }
+      this.logToConsole("error", `AI Brain error: ${err.message}`);
+    }
+  }
+
+  async analyzeSceneAI() {
+    if (this.aiReplyBox) {
+      this.aiReplyBox.textContent = "📷 Analyzing camera scene with VLM...";
+      this.aiReplyBox.classList.add("voice-reply-active");
+    }
+    this.logToConsole("info", "[AI BRAIN] Inspecting camera scene...");
+    try {
+      const res = await fetch("/api/ai/scene", { method: "POST" });
+      const data = await res.json();
+      const desc = data.description || "Scene inspection complete.";
+      if (this.aiReplyBox) {
+        this.aiReplyBox.textContent = `📷 [${data.provider || "Scene"}]: ${desc}`;
+      }
+      this.logToConsole("info", `[AI SCENE] ${desc}`);
+    } catch (err) {
+      if (this.aiReplyBox) {
+        this.aiReplyBox.textContent = `Scene inspection error: ${err.message}`;
+      }
+      this.logToConsole("error", `Scene inspection error: ${err.message}`);
     }
   }
 

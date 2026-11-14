@@ -120,6 +120,17 @@ class VoiceCommandRequest(BaseModel):
     speak_reply: bool = True
 
 
+class AIAskRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=1000, description="Natural language query or command for AI Brain")
+    include_vision: bool = True
+    execute: bool = True
+    speak: bool = False
+
+
+class VisionTargetRequest(BaseModel):
+    target_class: str = Field(..., description="Target class: person, cat, dog, any")
+
+
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
 
@@ -182,6 +193,7 @@ def create_app() -> FastAPI:
             "event_log": controller.event_log[-20:],
             "camera": controller.vision.get_status(),
             "voice": controller.voice.get_status(),
+            "ai": controller.ai_brain.get_status(),
             "pi_battery": controller.pi_battery.get_status(is_mock=controller.is_mock),
         }
 
@@ -197,6 +209,7 @@ def create_app() -> FastAPI:
             },
             "camera": controller.vision.get_status(),
             "voice": controller.voice.get_status(),
+            "ai": controller.ai_brain.get_status(),
             "pi_battery": controller.pi_battery.get_status(is_mock=controller.is_mock),
         }
 
@@ -453,6 +466,40 @@ def create_app() -> FastAPI:
             execute=execute,
             speak_reply=speak_reply,
         )
+
+    # --- Physical AI & LLM Brain Endpoints ---
+
+    @application.get("/api/ai/status")
+    async def api_ai_status():
+        """Return Physical AI Brain provider, model, capabilities, and history."""
+        return controller.ai_brain.get_status()
+
+    @application.post("/api/ai/ask")
+    async def api_ai_ask(req: AIAskRequest):
+        """Process natural language query via Gemini VLM / Ollama / Local Physical AI engine."""
+        res = await controller.ai_brain.ask(
+            query=req.query,
+            include_vision=req.include_vision,
+            execute=req.execute,
+        )
+        if req.speak and res.get("reply"):
+            try:
+                await controller.voice.speak(res["reply"], play_on_speaker=True)
+            except Exception as e:
+                logger.debug(f"AI TTS speak warning: {e}")
+        return res
+
+    @application.post("/api/ai/scene")
+    async def api_ai_scene(prompt: Optional[str] = None):
+        """Trigger multimodal visual scene analysis on the live camera view."""
+        p = prompt or "Describe the room and identify any people, cats, or obstacles"
+        return await controller.ai_brain.analyze_scene(prompt=p)
+
+    @application.post("/api/vision/target")
+    async def api_set_vision_target(req: VisionTargetRequest):
+        """Switch vision tracking target class ('person', 'cat', 'dog', 'any')."""
+        controller.vision.set_target_class(req.target_class)
+        return controller.vision.get_status()
 
     # --- Drive Endpoints ---
 

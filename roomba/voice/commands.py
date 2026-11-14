@@ -36,6 +36,12 @@ def parse_voice_command(text: str) -> Tuple[Optional[str], Dict[str, Any]]:
         return "arm", {}
 
     # Autonomous Modes
+    if any(k in t for k in ("follow cat", "track cat", "pet companion", "play with cat", "cat mode", "follow pet", "find cat")):
+        return "mode_pet", {}
+    if any(k in t for k in ("target cat", "look for cat")):
+        return "target_cat", {}
+    if any(k in t for k in ("target person", "target me")):
+        return "target_person", {}
     if any(k in t for k in ("follow me", "follow person", "follow mode", "track me", "come with me")):
         return "mode_follow", {}
     if any(k in t for k in ("wander", "explore", "roam")):
@@ -114,7 +120,25 @@ async def execute_voice_command(controller: Any, text: str) -> Dict[str, Any]:
             controller.disarm()
             return {"recognized": True, "intent": intent, "executed": True, "reply": "Robot disarmed."}
 
+        if intent == "mode_pet":
+            if hasattr(controller, "vision") and hasattr(controller.vision, "set_target_class"):
+                controller.vision.set_target_class("cat")
+            await controller.set_operating_mode("pet_companion")
+            return {"recognized": True, "intent": intent, "executed": True, "reply": "Switching to pet companion mode."}
+
+        if intent == "target_cat":
+            if hasattr(controller, "vision") and hasattr(controller.vision, "set_target_class"):
+                controller.vision.set_target_class("cat")
+            return {"recognized": True, "intent": intent, "executed": True, "reply": "Vision target set to cat."}
+
+        if intent == "target_person":
+            if hasattr(controller, "vision") and hasattr(controller.vision, "set_target_class"):
+                controller.vision.set_target_class("person")
+            return {"recognized": True, "intent": intent, "executed": True, "reply": "Vision target set to person."}
+
         if intent == "mode_follow":
+            if hasattr(controller, "vision") and hasattr(controller.vision, "set_target_class"):
+                controller.vision.set_target_class("person")
             await controller.set_operating_mode("follow_person")
             return {"recognized": True, "intent": intent, "executed": True, "reply": "Switching to follow person mode."}
 

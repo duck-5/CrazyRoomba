@@ -1,10 +1,12 @@
 """
-Integrated Camera & Person Vision Service for Roomba 960 (Raspberry Pi 5).
+Integrated Camera, Multi-Object (Person, Cat, Pet, Obstacles) Vision Service for Roomba 960 (Raspberry Pi 5).
 Provides:
 - Resilient camera initialization (never crashes if camera or OpenCV is missing)
-- Built-in offline person detection using OpenCV HOGDescriptor (no external weights needed)
-- Live annotated MJPEG frame generation for the Web Cockpit
-- Automatic perception injection into RobotController for FollowPersonMode
+- Multi-class object detection (COCO 80 classes via YOLOX ONNX, Pascal VOC 20 classes via MobileNet-SSD, and HOG fallback)
+- Specialized tracking for humans (person) and pets (cat, dog) with configurable target selector
+- Proactive obstacle detection for physical AI navigation
+- Live annotated MJPEG frame generation for Web Cockpit
+- Automatic perception injection into RobotController for FollowPersonMode, PetCompanionMode, and WanderMode
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import math
 import time
 import urllib.request
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 from roomba.perception.camera import (
     BaseCameraSource,
@@ -25,6 +27,12 @@ from roomba.perception.camera import (
     LibcameraCLISource,
     discover_video_devices,
 )
+from roomba.perception.classes import (
+    COCO_CLASSES,
+    VOC_CLASSES,
+    get_color_for_label,
+    nms_boxes,
+)
 from roomba.config import config, BASE_DIR
 
 _YOLOX_MODEL_URL = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/object_detection_yolox/object_detection_yolox_2022nov.onnx"
@@ -32,12 +40,13 @@ _YOLOX_FILENAME = "object_detection_yolox_2022nov.onnx"
 _MOBILENET_PROTOTXT_URL = "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/voc/MobileNetSSD_deploy.prototxt"
 _MOBILENET_MODEL_URL = "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/mobilenet_iter_73000.caffemodel"
 _MOBILENET_PERSON_CLASS_ID = 15
+_MOBILENET_CAT_CLASS_ID = 8
 
 logger = logging.getLogger("roomba.perception.vision")
 
 
 class VisionService:
-    """Manages camera capture, person detection, and MJPEG preview frames."""
+    """Manages camera capture, multi-object AI detection (people, cats, obstacles), and MJPEG preview frames."""
 
     def __init__(self, controller: Any = None, device_index: Optional[int] = None):
         self.controller = controller
@@ -51,10 +60,17 @@ class VisionService:
         self.available: bool = False
         self.status: str = "uninitialized"  # "uninitialized" | "connected" | "mock" | "error"
         self.error: Optional[str] = None
-        self.detector_backend: str = "none"  # "hog" | "mock" | "none"
+        self.detector_backend: str = "none"  # "yolox-coco" | "mobilenet-ssd" | "hog" | "mock" | "none"
 
+        # Active tracking target: "person", "cat", "dog", "any"
+        self.target_class: str = getattr(config, "vision_target_class", "person")
         self.person_detected: bool = False
         self.target_person: Optional[Dict[str, Any]] = None
+        self.cat_detected: bool = False
+        self.target_cat: Optional[Dict[str, Any]] = None
+        self.target_object: Optional[Dict[str, Any]] = None
+        self.detected_objects: List[Dict[str, Any]] = []
+
         self.last_raw_confidence: float = 0.0
         self.fps: float = 0.0
         self.frame_count: int = 0
@@ -66,16 +82,21 @@ class VisionService:
         self._yolox_net: Any = None
         self._yolox_grids: Any = None
         self._yolox_strides: Any = None
-        self._last_det_box: Optional[Tuple[int, int, int, int]] = None
-        self._last_det_conf: float = 0.0
+        self._last_detected_objects: List[Dict[str, Any]] = []
         self._det_frame_idx: int = 0
         self._ssd_net: Any = None
         self._hog: Any = None
         self._cv2: Any = None
         self._consecutive_failures: int = 0
 
+    def set_target_class(self, target_class: str) -> str:
+        """Set active tracking target class ('person', 'cat', 'dog', or 'any')."""
+        self.target_class = target_class.lower().strip()
+        logger.info(f"Vision target class set to: {self.target_class}")
+        return self.target_class
+
     def get_status(self) -> Dict[str, Any]:
-        """Return current camera & vision status dictionary."""
+        """Return current camera & multi-object vision status dictionary."""
         return {
             "available": self.available,
             "status": self.status,
@@ -85,9 +106,14 @@ class VisionService:
             "camera_backend": self.camera_backend,
             "rotation": self.rotation,
             "detector_backend": self.detector_backend,
+            "target_class": self.target_class,
             "error": self.error,
             "person_detected": self.person_detected,
             "target_person": self.target_person,
+            "cat_detected": self.cat_detected,
+            "target_cat": self.target_cat,
+            "target_object": self.target_object,
+            "detected_objects": self.detected_objects,
             "last_raw_confidence": round(self.last_raw_confidence, 3),
             "fps": round(self.fps, 1),
             "frame_count": self.frame_count,
@@ -101,7 +127,7 @@ class VisionService:
         device_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Safely initialize camera and person detector.
+        Safely initialize camera and multi-object detector.
         Never raises on missing hardware or missing OpenCV; records error state instead.
         """
         await self.stop()
@@ -115,6 +141,10 @@ class VisionService:
         self.error = None
         self.person_detected = False
         self.target_person = None
+        self.cat_detected = False
+        self.target_cat = None
+        self.target_object = None
+        self.detected_objects = []
         self._consecutive_failures = 0
 
         if self._frame_event is None:
@@ -216,7 +246,7 @@ class VisionService:
         self.device_path = cam.device_path
         self.camera_backend = cam.backend_name
 
-        # Initialize person detector (MobileNet-SSD primary, HOG fallback)
+        # Initialize detector (YOLOX COCO primary, MobileNet-SSD secondary, HOG fallback)
         await asyncio.get_running_loop().run_in_executor(None, self._init_detector_sync, cv2)
 
         self.camera = cam
@@ -337,7 +367,6 @@ class VisionService:
             if proto.exists() and model.exists() and model.stat().st_size > 1_000_000:
                 return proto, model
 
-        # Auto-download to cache if missing
         cache_dir = Path.home() / ".cache" / "roomba" / "models"
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -346,7 +375,6 @@ class VisionService:
             if not proto.exists():
                 logger.info("Downloading MobileNetSSD_deploy.prototxt...")
                 urllib.request.urlretrieve(_MOBILENET_PROTOTXT_URL, str(proto))
-                # Lower Caffe DetectionOutput threshold so low-confidence poses aren't dropped before Python
                 txt = proto.read_text(encoding="utf-8", errors="ignore")
                 if "confidence_threshold: 0.25" in txt:
                     proto.write_text(txt.replace("confidence_threshold: 0.25", "confidence_threshold: 0.05"), encoding="utf-8")
@@ -363,8 +391,7 @@ class VisionService:
         self._yolox_net = None
         self._ssd_net = None
         self._hog = None
-        self._last_det_box = None
-        self._last_det_conf = 0.0
+        self._last_detected_objects = []
         self._det_frame_idx = 0
         self.detector_backend = "none"
 
@@ -377,7 +404,7 @@ class VisionService:
                 self._init_yolox_anchors()
                 self._yolox_net = net
                 self.detector_backend = "yolox-coco"
-                logger.info(f"Person detector initialized: YOLOX COCO ({yolox_path})")
+                logger.info(f"Detector initialized: YOLOX COCO 80-Class ({yolox_path})")
                 return
             except Exception as e:
                 logger.warning(f"YOLOX load failed, falling back to MobileNet-SSD: {e}")
@@ -389,7 +416,7 @@ class VisionService:
                 net = cv2.dnn.readNetFromCaffe(str(proto), str(model))
                 self._ssd_net = net
                 self.detector_backend = "mobilenet-ssd"
-                logger.info(f"Person detector initialized: MobileNet-SSD ({model})")
+                logger.info(f"Detector initialized: MobileNet-SSD 21-Class ({model})")
                 return
             except Exception as e:
                 logger.warning(f"MobileNet-SSD load failed, falling back to HOG: {e}")
@@ -399,14 +426,14 @@ class VisionService:
             hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
             self._hog = hog
             self.detector_backend = "hog"
-            logger.info("Person detector initialized: OpenCV HOG")
+            logger.info("Detector initialized: OpenCV HOG (person fallback)")
         except Exception as e:
             logger.warning(f"HOG detector init failed: {e}")
             self._hog = None
             self.detector_backend = "none"
 
     def _process_real_frame_sync(self, frame: Any) -> Tuple[Optional[Dict[str, Any]], Optional[bytes]]:
-        """Run optional rotation, person detection (MobileNet-SSD / HOG), and draw overlay on frame."""
+        """Run rotation, multi-object AI inference (person, cat, obstacles), and draw colored HUD on frame."""
         cv2 = self._cv2
         if cv2 is None or frame is None:
             return None, None
@@ -419,10 +446,8 @@ class VisionService:
             frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
         h, w = frame.shape[:2]
-        target = None
-        best_conf = 0.0
-        raw_best_person_conf = self.last_raw_confidence
-        best_box: Optional[Tuple[int, int, int, int]] = None
+        detected_objects: List[Dict[str, Any]] = []
+        raw_best_person_conf = 0.0
 
         if self._yolox_net is not None:
             run_infer = (self._det_frame_idx % 2 == 0)
@@ -443,27 +468,61 @@ class VisionService:
                 dets[:, :2] = (dets[:, :2] + self._yolox_grids) * self._yolox_strides
                 dets[:, 2:4] = np.exp(dets[:, 2:4]) * self._yolox_strides
 
+                obj_conf = dets[:, 4]
+                # cls_scores shape (8400, 80)
+                cls_scores = dets[:, 5:85] * obj_conf[:, np.newaxis]
+
                 # COCO class 0 = person
-                person_scores = dets[:, 4] * dets[:, 5]
+                person_scores = cls_scores[:, 0]
                 raw_best_person_conf = float(np.max(person_scores)) if person_scores.size > 0 else 0.0
                 raw_best_person_conf = min(1.0, max(0.0, raw_best_person_conf))
 
-                idx = int(np.argmax(person_scores)) if person_scores.size > 0 else -1
-                if idx >= 0 and float(person_scores[idx]) > 0.25:
-                    cx, cy, bw_box, bh_box = dets[idx, :4]
-                    x1 = max(0, int((cx - bw_box / 2.0) / ratio))
-                    y1 = max(0, int((cy - bh_box / 2.0) / ratio))
-                    x2 = min(w, int((cx + bw_box / 2.0) / ratio))
-                    y2 = min(h, int((cy + bh_box / 2.0) / ratio))
-                    if x2 > x1 and y2 > y1:
-                        best_conf = float(person_scores[idx])
-                        best_box = (x1, y1, x2 - x1, y2 - y1)
+                # Multi-class detection candidates across all 80 classes
+                max_cls_indices = np.argmax(cls_scores, axis=1)
+                max_cls_scores = np.max(cls_scores, axis=1)
+                valid_mask = max_cls_scores > 0.20
+                cand_anchors = np.where(valid_mask)[0]
 
-                self._last_det_box = best_box
-                self._last_det_conf = best_conf
+                cand_boxes: List[Tuple[int, int, int, int]] = []
+                cand_scores_list: List[float] = []
+                cand_class_ids: List[int] = []
+
+                if cand_anchors.size > 0:
+                    for a_idx in cand_anchors:
+                        cls_idx = int(max_cls_indices[a_idx])
+                        score_val = float(max_cls_scores[a_idx])
+                        cx, cy, bw_box, bh_box = dets[a_idx, :4]
+                        x1 = max(0, int((cx - bw_box / 2.0) / ratio))
+                        y1 = max(0, int((cy - bh_box / 2.0) / ratio))
+                        x2 = min(w, int((cx + bw_box / 2.0) / ratio))
+                        y2 = min(h, int((cy + bh_box / 2.0) / ratio))
+                        box_w = x2 - x1
+                        box_h = y2 - y1
+                        if box_w >= 6 and box_h >= 6:
+                            cand_boxes.append((x1, y1, box_w, box_h))
+                            cand_scores_list.append(score_val)
+                            cand_class_ids.append(cls_idx)
+
+                # NMS suppression to eliminate redundant boxes
+                keep = nms_boxes(cand_boxes, cand_scores_list, iou_threshold=0.45)
+                for k in keep[:10]:
+                    cls_id = cand_class_ids[k]
+                    label = COCO_CLASSES[cls_id] if cls_id < len(COCO_CLASSES) else f"class_{cls_id}"
+                    bx, by, bw_b, bh_b = cand_boxes[k]
+                    conf = cand_scores_list[k]
+                    detected_objects.append({
+                        "class_id": cls_id,
+                        "label": label,
+                        "confidence": round(conf, 3),
+                        "bbox": [bx, by, bw_b, bh_b],
+                        "x_center": round((bx + bw_b / 2.0) / float(w), 4),
+                        "bbox_width": round(bw_b / float(w), 4),
+                    })
+
+                self._last_detected_objects = detected_objects
             else:
-                best_box = self._last_det_box
-                best_conf = self._last_det_conf
+                detected_objects = self._last_detected_objects
+                raw_best_person_conf = self.last_raw_confidence
 
         elif self._ssd_net is not None:
             raw_best_person_conf = 0.0
@@ -472,24 +531,46 @@ class VisionService:
             self._ssd_net.setInput(blob)
             detections = self._ssd_net.forward()
             num_det = detections.shape[2] if len(detections.shape) >= 3 else 0
+
+            cand_boxes = []
+            cand_scores_list = []
+            cand_class_ids = []
+
             for i in range(num_det):
                 conf = float(detections[0, 0, i, 2])
                 class_id = int(detections[0, 0, i, 1])
-                if class_id == _MOBILENET_PERSON_CLASS_ID:
-                    if conf > raw_best_person_conf:
-                        raw_best_person_conf = conf
-                    if conf > 0.15 and conf > best_conf:
-                        x1 = max(0, int(detections[0, 0, i, 3] * w))
-                        y1 = max(0, int(detections[0, 0, i, 4] * h))
-                        x2 = min(w, int(detections[0, 0, i, 5] * w))
-                        y2 = min(h, int(detections[0, 0, i, 6] * h))
-                        if x2 > x1 and y2 > y1:
-                            best_conf = conf
-                            best_box = (x1, y1, x2 - x1, y2 - y1)
+                if class_id == _MOBILENET_PERSON_CLASS_ID and conf > raw_best_person_conf:
+                    raw_best_person_conf = conf
+
+                if conf > 0.15 and 0 < class_id < len(VOC_CLASSES):
+                    x1 = max(0, int(detections[0, 0, i, 3] * w))
+                    y1 = max(0, int(detections[0, 0, i, 4] * h))
+                    x2 = min(w, int(detections[0, 0, i, 5] * w))
+                    y2 = min(h, int(detections[0, 0, i, 6] * h))
+                    box_w = x2 - x1
+                    box_h = y2 - y1
+                    if box_w >= 6 and box_h >= 6:
+                        cand_boxes.append((x1, y1, box_w, box_h))
+                        cand_scores_list.append(conf)
+                        cand_class_ids.append(class_id)
+
+            keep = nms_boxes(cand_boxes, cand_scores_list, iou_threshold=0.45)
+            for k in keep[:10]:
+                cls_id = cand_class_ids[k]
+                label = VOC_CLASSES[cls_id] if cls_id < len(VOC_CLASSES) else f"class_{cls_id}"
+                bx, by, bw_b, bh_b = cand_boxes[k]
+                conf = cand_scores_list[k]
+                detected_objects.append({
+                    "class_id": cls_id,
+                    "label": label,
+                    "confidence": round(conf, 3),
+                    "bbox": [bx, by, bw_b, bh_b],
+                    "x_center": round((bx + bw_b / 2.0) / float(w), 4),
+                    "bbox_width": round(bw_b / float(w), 4),
+                })
 
         elif self._hog is not None:
             raw_best_person_conf = 0.0
-            # Resize for fast CPU inference on Raspberry Pi 5
             target_w = 320
             scale = target_w / float(w)
             target_h = max(1, int(h * scale))
@@ -502,77 +583,154 @@ class VisionService:
                 scale=1.08,
             )
 
+            cand_boxes = []
+            cand_scores_list = []
             for idx, (rx, ry, rw, rh) in enumerate(rects):
                 if idx < len(weights):
                     raw_w = weights[idx]
                     weight = float(raw_w.item()) if hasattr(raw_w, "item") else float(raw_w)
                 else:
                     weight = 0.5
-                # Map HOG SVM score to ~0..1 confidence
                 conf = min(1.0, max(0.0, weight / 1.5))
                 if conf > raw_best_person_conf:
                     raw_best_person_conf = conf
-                if conf > 0.20 and conf > best_conf:
-                    best_conf = conf
-                    best_box = (
-                        int(rx / scale),
-                        int(ry / scale),
-                        int(rw / scale),
-                        int(rh / scale),
-                    )
+                if conf > 0.20:
+                    cand_boxes.append((int(rx / scale), int(ry / scale), int(rw / scale), int(rh / scale)))
+                    cand_scores_list.append(conf)
+
+            keep = nms_boxes(cand_boxes, cand_scores_list, iou_threshold=0.45)
+            for k in keep[:5]:
+                bx, by, bw_b, bh_b = cand_boxes[k]
+                conf = cand_scores_list[k]
+                detected_objects.append({
+                    "class_id": 0,
+                    "label": "person",
+                    "confidence": round(conf, 3),
+                    "bbox": [bx, by, bw_b, bh_b],
+                    "x_center": round((bx + bw_b / 2.0) / float(w), 4),
+                    "bbox_width": round(bw_b / float(w), 4),
+                })
 
         self.last_raw_confidence = raw_best_person_conf
+        self.detected_objects = detected_objects
 
-        if best_box is not None:
-            bx, by, bw, bh = best_box
-            x_center = (bx + bw / 2.0) / float(w)
-            bbox_width = bw / float(w)
-            target = {
-                "x_center": round(x_center, 4),
-                "bbox_width": round(bbox_width, 4),
-                "confidence": round(best_conf, 3),
-                "bbox": [bx, by, bw, bh],
-            }
-            cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (0, 230, 118), 2)
-            label = f"PERSON {int(best_conf * 100)}%"
+        # Resolve person, cat, and active target objects
+        target_person = None
+        target_cat = None
+
+        persons = [o for o in detected_objects if o["label"] == "person"]
+        if persons:
+            target_person = max(persons, key=lambda o: o["confidence"])
+            self.person_detected = True
+        else:
+            self.person_detected = False
+        self.target_person = target_person
+
+        cats = [o for o in detected_objects if o["label"] == "cat"]
+        if cats:
+            target_cat = max(cats, key=lambda o: o["confidence"])
+            self.cat_detected = True
+        else:
+            self.cat_detected = False
+        self.target_cat = target_cat
+
+        if self.target_class == "cat":
+            target_object = target_cat
+        elif self.target_class == "dog":
+            dogs = [o for o in detected_objects if o["label"] == "dog"]
+            target_object = max(dogs, key=lambda o: o["confidence"]) if dogs else None
+        elif self.target_class == "any":
+            target_object = max(detected_objects, key=lambda o: o["confidence"]) if detected_objects else None
+        else:
+            # Default person target
+            target_object = target_person
+
+        self.target_object = target_object
+
+        # Draw category-colored bounding boxes and overlays on frame
+        for obj in detected_objects:
+            bx, by, bw_b, bh_b = obj["bbox"]
+            lbl = obj["label"]
+            conf = obj["confidence"]
+            color = get_color_for_label(lbl)
+
+            cv2.rectangle(frame, (bx, by), (bx + bw_b, by + bh_b), color, 2)
+            caption = f"{lbl.upper()} {int(conf * 100)}%"
             cv2.putText(
                 frame,
-                label,
-                (bx, max(20, by - 8)),
+                caption,
+                (bx, max(18, by - 6)),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (0, 230, 118),
+                0.52,
+                color,
                 2,
             )
 
-        # Overlay HUD status
-        mode_text = "FOLLOW ACTIVE" if (
-            self.controller and getattr(self.controller.mode_manager, "active_name", "") == "follow_person"
-        ) else "VISION READY"
+        # Draw HUD status bar
+        active_mode = self.controller.mode_manager.active_name if self.controller else "manual"
+        mode_text = f"MODE: {active_mode.upper()}"
+        summary_parts = []
+        if self.cat_detected and self.target_cat:
+            summary_parts.append(f"CAT {int(self.target_cat['confidence']*100)}%")
+        if self.person_detected and self.target_person:
+            summary_parts.append(f"PERSON {int(self.target_person['confidence']*100)}%")
+        summary_str = f" | {', '.join(summary_parts)}" if summary_parts else ""
+
         cv2.putText(
             frame,
-            f"{mode_text} | {self.fps:.1f} FPS | {self.detector_backend}",
+            f"{mode_text} | {self.fps:.1f} FPS | {self.detector_backend}{summary_str}",
             (10, 24),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
+            0.50,
             (255, 255, 255),
             1,
         )
 
         ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
         jpeg = buf.tobytes() if ok else None
-        return target, jpeg
+
+        # Return target_person (or active target_object) for backward-compatible signature
+        return (target_person if self.target_class == "person" else (target_object or target_person)), jpeg
 
     def _generate_mock_frame_sync(self, t: float) -> Tuple[Dict[str, Any], Optional[bytes]]:
-        """Generate a synthetic camera frame with a moving simulated person."""
-        # Sinusoidal horizontal movement across frame
-        x_center = 0.5 + 0.25 * math.sin(t * 0.8)
-        bbox_width = 0.30 + 0.05 * math.cos(t * 0.5)
-        target = {
-            "x_center": round(x_center, 4),
-            "bbox_width": round(bbox_width, 4),
+        """Generate a synthetic camera frame with moving simulated person, cat, and HUD."""
+        # Simulated person (upper-body walking)
+        person_x = 0.5 + 0.25 * math.sin(t * 0.8)
+        person_w = 0.30 + 0.05 * math.cos(t * 0.5)
+        sim_person = {
+            "class_id": 0,
+            "label": "person",
             "confidence": 0.92,
+            "x_center": round(person_x, 4),
+            "bbox_width": round(person_w, 4),
+            "bbox": [int(max(0, (person_x - person_w / 2.0) * 320)), 20, int(person_w * 320), 160],
         }
+
+        # Simulated cat (walking closer to floor)
+        cat_x = 0.45 + 0.20 * math.cos(t * 0.6)
+        cat_w = 0.22 + 0.03 * math.sin(t * 0.4)
+        sim_cat = {
+            "class_id": 15,
+            "label": "cat",
+            "confidence": 0.89,
+            "x_center": round(cat_x, 4),
+            "bbox_width": round(cat_w, 4),
+            "bbox": [int(max(0, (cat_x - cat_w / 2.0) * 320)), 140, int(cat_w * 320), 75],
+        }
+
+        self.detected_objects = [sim_person, sim_cat]
+        self.person_detected = True
+        self.target_person = sim_person
+        self.cat_detected = True
+        self.target_cat = sim_cat
+        self.last_raw_confidence = 0.92
+
+        if self.target_class == "cat":
+            self.target_object = sim_cat
+            active_target = sim_cat
+        else:
+            self.target_object = sim_person
+            active_target = sim_person
 
         jpeg = None
         if self._cv2 is not None:
@@ -588,40 +746,50 @@ class VisionService:
             for gy in range(0, h, 40):
                 cv2.line(frame, (0, gy), (w, gy), (30, 38, 52), 1)
 
-            bw = int(bbox_width * w)
-            bh = int(bw * 1.8)
-            cx = int(x_center * w)
-            cy = h // 2
-            bx = max(0, cx - bw // 2)
-            by = max(10, cy - bh // 2)
+            # Draw Person (Green)
+            pbx, pby, pbw, pbh = sim_person["bbox"]
+            cv2.rectangle(frame, (pbx, pby), (min(w - 1, pbx + pbw), min(h - 1, pby + pbh)), (0, 230, 118), 2)
+            cv2.circle(frame, (pbx + pbw // 2, pby + 20), 14, (0, 230, 118), 2)
+            cv2.putText(frame, "PERSON 92%", (pbx, max(16, pby - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 230, 118), 1)
 
-            cv2.rectangle(frame, (bx, by), (min(w - 1, bx + bw), min(h - 1, by + bh)), (0, 230, 118), 2)
-            cv2.circle(frame, (cx, by + 20), 14, (0, 230, 118), 2)
-            cv2.putText(frame, "MOCK PERSON 92%", (bx, max(18, by - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 230, 118), 1)
-            cv2.putText(frame, "MOCK CAMERA SIM", (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 200, 220), 1)
+            # Draw Cat (Amber / Orange) with little cat ears
+            cbx, cby, cbw, cbh = sim_cat["bbox"]
+            cv2.rectangle(frame, (cbx, cby), (min(w - 1, cbx + cbw), min(h - 1, cby + cbh)), (0, 165, 255), 2)
+            # Cat ear triangles
+            cv2.line(frame, (cbx + 8, cby), (cbx + 14, cby - 8), (0, 165, 255), 2)
+            cv2.line(frame, (cbx + 14, cby - 8), (cbx + 20, cby), (0, 165, 255), 2)
+            cv2.line(frame, (cbx + cbw - 20, cby), (cbx + cbw - 14, cby - 8), (0, 165, 255), 2)
+            cv2.line(frame, (cbx + cbw - 14, cby - 8), (cbx + cbw - 8, cby), (0, 165, 255), 2)
+            cv2.putText(frame, "CAT 89%", (cbx, max(16, cby - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 165, 255), 1)
+
+            cv2.putText(frame, "MOCK PHYSICAL AI SIM", (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 200, 220), 1)
 
             ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
             if ok:
                 jpeg = buf.tobytes()
 
-        return target, jpeg
+        return active_target, jpeg
 
     async def _vision_loop(self) -> None:
-        """Background loop reading frames, detecting persons, and updating controller perception."""
+        """Background loop reading frames, detecting multi-class objects, and updating controller perception."""
         loop = asyncio.get_running_loop()
         last_rate_log = 0.0
         while self.available and self.camera is not None:
             t_start = time.monotonic()
             try:
                 if self.is_mock:
-                    target, jpeg = await loop.run_in_executor(None, self._generate_mock_frame_sync, t_start)
-                    self.person_detected = True
-                    self.target_person = target
-                    self.last_raw_confidence = float(target.get("confidence", 0.0))
+                    active_target, jpeg = await loop.run_in_executor(None, self._generate_mock_frame_sync, t_start)
                     if jpeg is not None:
                         self._latest_jpeg = jpeg
                     if self.controller:
-                        self.controller.set_perception_target({"target_person": target})
+                        self.controller.set_perception_target({
+                            "target_person": self.target_person,
+                            "target_cat": self.target_cat,
+                            "target_object": self.target_object,
+                            "detected_objects": self.detected_objects,
+                            "person_detected": self.person_detected,
+                            "cat_detected": self.cat_detected,
+                        })
                     self.frame_count += 1
                     self._consecutive_failures = 0
                 else:
@@ -641,26 +809,24 @@ class VisionService:
                         continue
 
                     self._consecutive_failures = 0
-                    target, jpeg = await loop.run_in_executor(None, self._process_real_frame_sync, frame)
+                    active_target, jpeg = await loop.run_in_executor(None, self._process_real_frame_sync, frame)
                     if jpeg is not None:
                         self._latest_jpeg = jpeg
 
-                    if target is not None:
-                        self.person_detected = True
-                        self.target_person = target
-                        if self.controller:
-                            self.controller.set_perception_target({"target_person": target})
-                    else:
-                        self.person_detected = False
-                        self.target_person = None
-                        if self.controller:
-                            self.controller.set_perception_target({
-                                "target_person": {
-                                    "x_center": 0.5,
-                                    "bbox_width": 0.0,
-                                    "confidence": 0.0,
-                                }
-                            })
+                    perception_payload = {
+                        "target_person": self.target_person or {
+                            "x_center": 0.5,
+                            "bbox_width": 0.0,
+                            "confidence": 0.0,
+                        },
+                        "target_cat": self.target_cat,
+                        "target_object": self.target_object,
+                        "detected_objects": self.detected_objects,
+                        "person_detected": self.person_detected,
+                        "cat_detected": self.cat_detected,
+                    }
+                    if self.controller:
+                        self.controller.set_perception_target(perception_payload)
                     self.frame_count += 1
 
                 if self._frame_event is not None:
@@ -677,10 +843,11 @@ class VisionService:
                 if now_log - last_rate_log >= 1.0:
                     last_rate_log = now_log
                     conf_pct = round(self.last_raw_confidence * 100.0, 1)
-                    state_str = "DETECTED" if self.person_detected else "NONE"
+                    person_str = "PERSON" if self.person_detected else "NO_PERSON"
+                    cat_str = f", CAT {int(self.target_cat['confidence']*100)}%" if self.cat_detected and self.target_cat else ""
                     msg = (
-                        f"[VISION] Person detection confidence: {conf_pct:.1f}% "
-                        f"(state={state_str}, backend={self.detector_backend}, fps={self.fps:.1f})"
+                        f"[VISION] Detection: {person_str} ({conf_pct:.1f}%){cat_str} "
+                        f"(backend={self.detector_backend}, fps={self.fps:.1f}, objects={len(self.detected_objects)})"
                     )
                     print(msg, flush=True)
                     logger.info(msg)

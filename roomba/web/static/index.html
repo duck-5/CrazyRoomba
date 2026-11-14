@@ -409,11 +409,15 @@
           </button>
           <button class="btn btn-behavior" data-behavior="wander">
             <span class="beh-btn-title">🔄 Wander Mode</span>
-            <span class="beh-btn-desc">Obstacle avoidance explore</span>
+            <span class="beh-btn-desc">Multi-sensor & vision avoid</span>
           </button>
           <button class="btn btn-behavior" data-behavior="follow_person">
             <span class="beh-btn-title">👤 Follow Person</span>
-            <span class="beh-btn-desc">Camera vision tracking (Ready)</span>
+            <span class="beh-btn-desc">Vision tracking & centering</span>
+          </button>
+          <button class="btn btn-behavior" data-behavior="pet_companion">
+            <span class="beh-btn-title">🐾 Pet Companion</span>
+            <span class="beh-btn-desc">Cat/dog tracking & playful retreats</span>
           </button>
         </div>
       </div>
@@ -538,15 +542,66 @@
         <img id="camera-stream-img" class="camera-stream-img" alt="Roomba Camera Feed" />
         <div class="camera-overlay-bar">
           <span id="person-detect-badge" class="badge">NO PERSON</span>
+          <span id="cat-detect-badge" class="badge badge-warning" style="display: none;">🐱 CAT 0%</span>
           <span id="camera-fps-text" class="camera-fps-text">-- FPS</span>
         </div>
       </div>
 
-      <!-- Follow Person Controls -->
+      <!-- Follow Person & Pet Controls -->
       <div class="vision-controls-row">
-        <button id="btn-toggle-follow" class="btn btn-primary" type="button">👤 Start Follow Person</button>
+        <button id="btn-toggle-follow" class="btn btn-primary" type="button">👤 Follow Person</button>
+        <button id="btn-toggle-pet-companion" class="btn btn-secondary" type="button">🐾 Pet Companion</button>
         <button id="btn-rotate-camera" class="btn btn-secondary btn-sm" type="button" title="Flip camera 180°">🔁 Flip 180°</button>
         <button id="btn-refresh-camera" class="btn btn-secondary btn-sm" type="button">🔄 Retry Camera</button>
+      </div>
+
+      <!-- Physical AI Target Selector & Detected Objects Strip -->
+      <div class="physical-ai-strip">
+        <div class="ai-target-selector-row">
+          <label class="sound-label" for="select-vision-target">🎯 Vision AI Target:</label>
+          <div class="sound-input-row">
+            <select id="select-vision-target" class="sound-select">
+              <option value="person">👤 Person (Default)</option>
+              <option value="cat">🐱 Cat (Pet Companion)</option>
+              <option value="dog">🐕 Dog</option>
+              <option value="any">🎯 Any Object</option>
+            </select>
+          </div>
+        </div>
+        <div class="detected-objects-container">
+          <span class="detected-objects-title">Detected Objects:</span>
+          <div id="detected-objects-pills" class="detected-pills-row">
+            <span class="pill pill-dim">Scanning...</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Physical AI / LLM Brain Section -->
+      <div class="voice-section ai-brain-section">
+        <div class="section-title-row">
+          <h3>PHYSICAL AI BRAIN & VLM</h3>
+          <span id="ai-provider-badge" class="badge badge-info">AI READY</span>
+        </div>
+        <p class="arm-hint">Multimodal VLM & high-level reasoning. Ask about the room, command pet tracking, or inspect surroundings.</p>
+
+        <!-- Quick Prompt Chips -->
+        <div class="ai-quick-chips">
+          <button class="btn-ai-chip" data-query="What do you see?">👁️ What do you see?</button>
+          <button class="btn-ai-chip" data-query="Find my cat">🐱 Find my cat</button>
+          <button class="btn-ai-chip" data-query="Pet companion mode">🐾 Pet Companion</button>
+          <button class="btn-ai-chip" data-query="Explore room and avoid obstacles">🔄 Explore Room</button>
+          <button class="btn-ai-chip" data-query="What is your battery and system status?">⚡ Status</button>
+        </div>
+
+        <div class="sound-group">
+          <div class="sound-input-row">
+            <input type="text" id="input-ai-prompt" class="sound-input" placeholder="Ask AI: 'Where is my cat?', 'Is path clear?'..." maxlength="400" />
+            <button id="btn-ask-ai" class="btn btn-primary btn-sm" type="button">🧠 Ask AI</button>
+            <button id="btn-scene-ai" class="btn btn-secondary btn-sm" type="button" title="Multimodal camera scene analysis">📷 Scene</button>
+          </div>
+        </div>
+
+        <div id="ai-reply-box" class="voice-reply-box">AI Brain standing by. Ask a question or click a prompt above.</div>
       </div>
 
       <!-- English Voice (TTS & STT) Section -->

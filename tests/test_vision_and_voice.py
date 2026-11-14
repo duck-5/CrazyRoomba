@@ -179,6 +179,12 @@ def test_ui_contains_resilience_vision_and_voice_elements(client):
         "btn-speak-tts",
         "btn-browser-stt",
         "input-stt-command",
+        "select-vision-target",
+        "cat-detect-badge",
+        "btn-toggle-pet-companion",
+        "btn-ask-ai",
+        "btn-scene-ai",
+        "input-ai-prompt",
     ]:
         assert elem_id in html
 
